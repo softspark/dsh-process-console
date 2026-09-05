@@ -1,0 +1,20 @@
+# Build artifacts
+node_modules/
+lib/
+*.tsbuildinfo
+coverage/
+.turbo/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Packing output
+*.tgz

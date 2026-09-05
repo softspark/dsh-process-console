@@ -1,0 +1,18 @@
+# Self-contained install unit for the process-console plugin.
+#
+# One row, one half: the whole plugin lives in the browser. DSH imports a row's
+# name on the HOST even when the behaviour is entirely in the page, then reads
+# the package's `dsh.client` declaration to decide what to serve. The row must
+# therefore name the package root, which is a no-op Node module; naming
+# `/client` here points the host import at the browser artifact and the
+# harness refuses to boot with `window is not defined`.
+#
+# `insert:` is load-bearing. A bare `- id:` entry *patches* a row that already
+# exists; DSH reports `patch: entry "ui-process-console" not found`, skips it,
+# and leaves a plugin that installs cleanly and does nothing.
+#
+# The browser half registers one tab in the conversation view ring next to
+# Chat and Trajectory. Removing this bundle from a profile removes the tab.
+- insert:
+    - id: ui-process-console
+      name: '@softspark/dsh-process-console'

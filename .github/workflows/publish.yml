@@ -1,0 +1,52 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Verify and publish to npm
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19.0'
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+          scope: '@softspark'
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run verify
+      - run: node scripts/verify-version-sync.mjs --tag "${GITHUB_REF_NAME}"
+      - run: pnpm run audit
+      - run: pnpm run audit:dependencies
+      - run: pnpm run audit:signatures
+      - name: Generate SARIF
+        run: node scripts/audit.mjs --sarif > audit.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: audit.sarif
+      - run: pnpm run build
+      - run: npm pack --dry-run --ignore-scripts
+      - name: Publish public package with provenance
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          generate_release_notes: true

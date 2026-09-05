@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run verify
+
+  audit:
+    name: Supply chain and source audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run audit
+      - run: pnpm run audit:permissions
+      - run: pnpm run audit:dependencies
+      - name: Generate SARIF
+        run: node scripts/audit.mjs --sarif > audit.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: audit.sarif
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Required files present
+        run: node scripts/verify-required-files.mjs
+      - name: No build artifacts tracked
+        run: |
+          offending=$(git ls-files | grep -E 'node_modules/|(^|/)lib/|\.tsbuildinfo$|\.zip$' || true)
+          if [ -n "$offending" ]; then
+            echo "tracked files that must be gitignored:"; echo "$offending"; exit 1
+          fi
+          echo "OK: no build artifacts tracked."
