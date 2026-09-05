@@ -18,7 +18,20 @@ function fakeContext() {
   const disposers: Array<() => void> = []
   const dictionaries: unknown[] = []
   const bindings = new Map<SessionId, { session: unknown }>()
+  const definitions: Array<{ kind?: string; target: string }> = []
   const ctx = {
+    conversationEvents: {
+      register: vi.fn((definition: { kind: string; target?: string }) => {
+        definitions.push({ kind: definition.kind, target: definition.target ?? '' })
+        return () => {}
+      }),
+    },
+    conversationViews: {
+      register: vi.fn((definition: { target: string }) => {
+        definitions.push({ target: definition.target })
+        return () => {}
+      }),
+    },
     effect: (run: () => unknown, _label: string) => {
       effects.push(run as () => void)
       const dispose = run()
@@ -39,16 +52,20 @@ function fakeContext() {
       }),
     },
   }
-  return { ctx: ctx as unknown as ClientContext, registrations, disposers, dictionaries, bindings }
+  return { ctx: ctx as unknown as ClientContext, registrations, disposers, dictionaries, bindings, definitions }
 }
 
 describe('apply', () => {
-  it('declares its services and registers one tab in the conversation view ring', () => {
-    expect(inject).toEqual(['slots', 'locale', 'sessions'])
-    const { ctx, registrations, dictionaries } = fakeContext()
+  it('declares its services, registers the stream fold and one tab in the conversation view ring', () => {
+    expect(inject).toEqual(['slots', 'locale', 'sessions', 'conversationEvents', 'conversationViews'])
+    const { ctx, registrations, dictionaries, definitions } = fakeContext()
 
     apply(ctx)
 
+    expect(definitions).toEqual([
+      { kind: 'process-console-stream', target: 'process-console' },
+      { target: 'process-console' },
+    ])
     expect(dictionaries).toEqual([['process-console', expect.objectContaining({ en: expect.anything(), zh: expect.anything() })]])
     expect(registrations).toHaveLength(1)
     const [entry] = registrations

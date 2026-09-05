@@ -3,9 +3,11 @@
  * console on the right.
  *
  * Pure presentation. Every live fact arrives through the framework hooks
- * (`useSessions` for the tree, `useProcess` for the selected window) and every
- * gesture leaves through an injected callback. The component holds only view
- * state: filter text, follow-tail, per-line expansion.
+ * (`useSessions` for the session tree, `useSession` for the root window,
+ * `useProcess` for the selected child window) and every gesture leaves
+ * through an injected callback. The component holds only view state: filter
+ * text, follow-tail, per-line expansion, and which external delegation is
+ * selected.
  * @module @softspark/dsh-process-console/client/view
  */
 
@@ -17,9 +19,11 @@ import css from './ProcessConsoleView.module.css'
 import {
   foldConsole, isLong, LONG_LINE_ROWS, safeJson, type ConsoleLine,
 } from './console-lines.ts'
+import { externalLabel, foldExternal } from './external-lines.ts'
 import type { NS } from './locales.ts'
-import { buildProcessTree, type ProcessEntry } from './process-tree.ts'
+import { buildProcessTree, withExternals, type ProcessRow } from './process-tree.ts'
 import type { ProcessSource } from './process-source.ts'
+import { EMPTY_PROCESS_CONSOLE_SNAPSHOT, type ExternalProcess } from './stream-definition.ts'
 
 /** The business face `apply` injects into the tab. */
 export interface ProcessConsoleInjected {
@@ -34,6 +38,7 @@ export type ProcessConsoleViewProps =
   ConvViewProps & InjectFace<ProcessConsoleInjected> & PropsLocale<NS>
 
 const FOLLOW_SLACK_PX = 24
+const NO_EXTERNALS: ReadonlyMap<string, ExternalProcess> = EMPTY_PROCESS_CONSOLE_SNAPSHOT.externals
 
 /** `HH:MM:SS.mmm` in the viewer's local time; a blank cell when no time exists. */
 export function formatTime(time: number | null): string {
@@ -122,31 +127,37 @@ function LineRow({ line, rawAll, t }: LineRowProps) {
 }
 
 interface TreeProps {
-  readonly entries: readonly ProcessEntry[]
-  readonly selected: SessionId | null
-  readonly onSelect: (id: SessionId) => void
+  readonly rows: readonly ProcessRow[]
+  readonly selected: string | null
+  readonly onSelect: (row: ProcessRow) => void
   readonly t: ProcessConsoleViewProps['t']
 }
 
-function ProcessTree({ entries, selected, onSelect, t }: TreeProps) {
+function ProcessTree({ rows, selected, onSelect, t }: TreeProps) {
   return (
     <nav className={css.tree} aria-label={t('tree.title')}>
       <div className={css.treeTitle}>{t('tree.title')}</div>
-      {entries.map(entry => (
+      {rows.map(row => (
         <button
           type="button"
-          key={entry.id}
+          key={row.id}
           className={css.treeRow}
-          aria-current={entry.id === selected ? 'true' : undefined}
-          style={{ paddingLeft: 12 + entry.depth * 14 }}
-          title={`${entry.id}${entry.agentPreset === undefined ? '' : ` · ${entry.agentPreset}`}`}
-          onClick={() => { onSelect(entry.id) }}
+          aria-current={row.id === selected ? 'true' : undefined}
+          style={{ paddingLeft: 12 + row.depth * 14 }}
+          title={row.kind === 'session'
+            ? `${row.id}${row.agentPreset === undefined ? '' : ` · ${row.agentPreset}`}`
+            : `${row.id} · ${row.provider}`}
+          onClick={() => { onSelect(row) }}
         >
-          <span className={css.treeDot} data-running={entry.running ? 'true' : 'false'} />
+          <span className={css.treeDot} data-running={row.running ? 'true' : 'false'} />
           <span className={css.treeLabel}>
-            {entry.depth === 0 ? `${t('tree.main')} · ${entry.label}` : entry.label}
+            {row.kind === 'session' && row.depth === 0 ? `${t('tree.main')} · ${row.label}` : row.label}
           </span>
-          <span className={css.treeBadge}>{entry.running ? t('tree.running') : t('tree.idle')}</span>
+          <span className={css.treeBadge}>
+            {row.kind === 'external'
+              ? `${t('tree.delegation')} · ${row.running ? t('tree.running') : t('tree.done')}`
+              : row.running ? t('tree.running') : t('tree.idle')}
+          </span>
         </button>
       ))}
     </nav>
@@ -154,10 +165,11 @@ function ProcessTree({ entries, selected, onSelect, t }: TreeProps) {
 }
 
 export function ProcessConsoleView({
-  sessionId, useSessions, useProcess, select, loadOlder, t,
+  sessionId, useSession, useSessions, useProcess, select, loadOlder, t,
 }: ProcessConsoleViewProps) {
   const ids = useSessions(state => state.ids)
   const byId = useSessions(state => state.byId)
+  const rootExternals = useSession(state => state.views.get('process-console')?.externals ?? NO_EXTERNALS)
   const process = useProcess(state => state)
   const entries = useMemo(() => buildProcessTree({ ids, byId }, sessionId), [ids, byId, sessionId])
 
@@ -165,25 +177,46 @@ export function ProcessConsoleView({
   const [follow, setFollow] = useState(true)
   const [rawAll, setRawAll] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [externalSelected, setExternalSelected] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement | null>(null)
 
-  const selected = process.selected ?? sessionId
+  const selectedSession = process.selected ?? sessionId
+  const conversation = process.conversation
+  const childExternals = conversation?.views.get('process-console')?.externals
+
+  const externalsByParent = useMemo(() => {
+    const map = new Map<SessionId, ReadonlyMap<string, ExternalProcess>>()
+    map.set(sessionId, rootExternals)
+    if (selectedSession !== sessionId && childExternals !== undefined) map.set(selectedSession, childExternals)
+    return map
+  }, [sessionId, rootExternals, selectedSession, childExternals])
+  const rows = useMemo(() => withExternals(entries, externalsByParent, externalLabel), [entries, externalsByParent])
+
   // A child that left the tree (removed, or the root changed) falls back to the root.
   useEffect(() => {
-    if (!entries.some(entry => entry.id === selected)) select(sessionId)
-  }, [entries, selected, select, sessionId])
+    if (!entries.some(entry => entry.id === selectedSession)) select(sessionId)
+  }, [entries, selectedSession, select, sessionId])
+  const externalRow = externalSelected === null
+    ? undefined
+    : rows.find((row): row is Extract<ProcessRow, { kind: 'external' }> => row.kind === 'external' && row.id === externalSelected)
+  useEffect(() => {
+    if (externalSelected !== null && externalRow === undefined) setExternalSelected(null)
+  }, [externalSelected, externalRow])
 
-  const conversation = process.conversation
-  const lines = useMemo(() => (conversation === null ? [] : foldConsole(conversation)), [conversation])
+  const lines = useMemo(() => {
+    if (externalRow !== undefined) return foldExternal(externalRow.process)
+    return conversation === null ? [] : foldConsole(conversation)
+  }, [externalRow, conversation])
   const needle = filter.trim().toLowerCase()
   const visible = useMemo(() => lines.filter(line => matches(line, needle)), [lines, needle])
 
+  const selectedId = externalRow?.id ?? selectedSession
   const lastKey = visible[visible.length - 1]?.key
   useEffect(() => {
     const element = scroller.current
     if (element === null || !follow) return
     element.scrollTop = element.scrollHeight
-  }, [follow, lastKey, visible.length, selected])
+  }, [follow, lastKey, visible.length, selectedId])
 
   const onScroll = useCallback(() => {
     const element = scroller.current
@@ -192,8 +225,13 @@ export function ProcessConsoleView({
     setFollow(atBottom)
   }, [])
 
-  const onSelect = useCallback((id: SessionId) => {
-    select(id)
+  const onSelectRow = useCallback((row: ProcessRow) => {
+    if (row.kind === 'session') {
+      setExternalSelected(null)
+      select(row.id)
+    } else {
+      setExternalSelected(row.id)
+    }
     setFollow(true)
   }, [select])
 
@@ -203,10 +241,12 @@ export function ProcessConsoleView({
     void loadOlder().finally(() => { setLoadingOlder(false) })
   }, [loadOlder])
 
-  const current = entries.find(entry => entry.id === selected)
+  const current = rows.find(row => row.id === selectedId)
   const openState = conversation?.openState
   let status: { text: string; error: boolean } | null = null
-  if (process.status === 'unavailable') status = { text: t('console.unavailable'), error: true }
+  if (externalRow !== undefined) {
+    if (visible.length === 0) status = { text: t('console.empty'), error: false }
+  } else if (process.status === 'unavailable') status = { text: t('console.unavailable'), error: true }
   else if (conversation === null || openState === 'cold') status = { text: t('console.cold'), error: false }
   else if (openState === 'loading') status = { text: t('console.loading'), error: false }
   else if (openState === 'error') {
@@ -214,14 +254,20 @@ export function ProcessConsoleView({
     status = { text: message === undefined ? t('console.error') : `${t('console.openError')}: ${message}`, error: true }
   } else if (visible.length === 0) status = { text: t('console.empty'), error: false }
 
+  const stateLabel = current === undefined
+    ? t('tree.idle')
+    : current.kind === 'external'
+      ? (current.running ? t('tree.running') : t('tree.done'))
+      : (current.running ? t('tree.running') : t('tree.idle'))
+
   return (
     <div className={css.root}>
-      <ProcessTree entries={entries} selected={selected} onSelect={onSelect} t={t} />
-      <section className={css.pane} aria-label={current?.label ?? String(selected)}>
+      <ProcessTree rows={rows} selected={selectedId} onSelect={onSelectRow} t={t} />
+      <section className={css.pane} aria-label={current?.label ?? String(selectedId)}>
         <div className={css.toolbar}>
-          <span className={css.toolbarTitle}>{current?.label ?? String(selected)}</span>
+          <span className={css.toolbarTitle}>{current?.label ?? String(selectedId)}</span>
           <span className={css.toolbarState}>
-            {current?.running === true ? t('tree.running') : t('tree.idle')}
+            {stateLabel}
             {visible.length !== lines.length ? ` · ${visible.length}/${lines.length}` : ` · ${lines.length}`}
           </span>
           <input
@@ -235,7 +281,7 @@ export function ProcessConsoleView({
           <button
             type="button"
             className={css.toggle}
-            disabled={conversation?.hasMore !== true || loadingOlder}
+            disabled={externalRow !== undefined || conversation?.hasMore !== true || loadingOlder}
             onClick={onLoadOlder}
           >
             {loadingOlder ? t('console.loadingOlder') : t('console.loadOlder')}

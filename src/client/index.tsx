@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { en, NS, zh, type ProcessConsoleKey } from './locales.ts'
 import { createProcessSource, type ProcessSource } from './process-source.ts'
 import { ProcessConsoleView, type ProcessConsoleInjected } from './ProcessConsoleView.tsx'
+import { processConsoleViewDefinition, streamNodeDefinition } from './stream-definition.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -27,9 +28,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 export type { ProcessConsoleKey } from './locales.ts'
 export type { ProcessConsoleInjected } from './ProcessConsoleView.tsx'
+export type { ExternalProcess, ExternalStep, ProcessConsoleViewSnapshot } from './stream-definition.ts'
 
-/** Services the tab registration, its dictionaries and its data source require. */
-export const inject = ['slots', 'locale', 'sessions']
+/** Services the tab registration, its dictionaries, its data source and its event fold require. */
+export const inject = ['slots', 'locale', 'sessions', 'conversationEvents', 'conversationViews']
 
 /** Where the tab sits in the ring: after Chat (0) and Trajectory (10). */
 const VIEW_ORDER = 20
@@ -43,6 +45,12 @@ export function apply(ctx: ClientContext): void {
   // Registration-time text (the tab label) reads through the bound translate
   // as a thunk, so it follows the active locale without re-registration.
   const t = ctx.locale.bind(NS)
+
+  // External delegations: fold `subagent/stream` events from the shared
+  // Session window into the `process-console` view target. Both registrations
+  // ride the effect so plugin unload removes them.
+  ctx.effect(() => ctx.conversationEvents.register(streamNodeDefinition), 'process-console: stream definition')
+  ctx.effect(() => ctx.conversationViews.register(processConsoleViewDefinition), 'process-console: view target')
 
   // `ctx.sessions` narrows to the render face; `binding()` lives on the full
   // contract, which is why it is read through `ctx.get`.

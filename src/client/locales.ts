@@ -13,6 +13,8 @@ export type ProcessConsoleKey =
   | 'tree.main'
   | 'tree.running'
   | 'tree.idle'
+  | 'tree.delegation'
+  | 'tree.done'
   | 'console.follow'
   | 'console.filter'
   | 'console.raw'
@@ -48,6 +50,8 @@ export const en: Record<ProcessConsoleKey, string> = {
   'tree.main': 'main',
   'tree.running': 'running',
   'tree.idle': 'idle',
+  'tree.delegation': 'delegation',
+  'tree.done': 'done',
   'console.follow': 'Follow',
   'console.filter': 'Filter lines…',
   'console.raw': 'Raw',
@@ -89,6 +93,8 @@ export const zh: Record<ProcessConsoleKey, string> = {
   'tree.main': '主进程',
   'tree.running': '运行中',
   'tree.idle': '空闲',
+  'tree.delegation': '委派',
+  'tree.done': '完成',
   'console.follow': '跟随',
   'console.filter': '筛选行…',
   'console.raw': '原始',

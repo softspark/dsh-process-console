@@ -28,9 +28,15 @@ description: "Why the Processes tab is missing, why a pane stays empty, and why 
 
 ## A delegation to Claude Code or Copilot has no row
 
-**Symptom:** The parent console shows `CALL subagent_claude_code` and later `RESULT`, but the tree has no child.
+**Symptom:** The parent console shows `CALL subagent_claude_code` and later `RESULT`, but the tree has no `delegation` row under the parent.
 
-**Cause:** One-shot external providers are not session-backed. They return only the final answer to the parent log. The request prompt is in the `CALL` line's arguments and the answer in the `RESULT` line. A per-process stream needs a harness-side change; see the implementation plan.
+**Cause:** The harness running the parent has stock providers. One-shot external providers are not session-backed and, unpatched, return only the final answer to the parent log. The per-child row needs the `subagent/stream` events described in [the subagent/stream reference](../reference/subagent-stream.md). Confirm with the Raw toggle on the parent console: a patched harness shows `subagent/stream` events interleaved with the `CALL` and `RESULT`; a stock one shows none.
+
+## A delegation row shows only some of the child's steps
+
+**Symptom:** The child console starts mid-run, or a long tool output ends with `[stream text truncated]`.
+
+**Cause:** The stream is bounded on purpose: 16 KiB per text field, 2 KiB per metadata record, and the Session window pages history. Press Load older on the parent session to page the child's earlier events into the window; the row fills in once its first event is loaded.
 
 ## The console stops following new lines
 

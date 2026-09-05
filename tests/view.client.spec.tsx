@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationNode, ConversationSnapshot, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import { en } from '../src/client/locales.ts'
 import { createProcessSource, type ProcessSnapshot } from '../src/client/process-source.ts'
+import type { ExternalProcess } from '../src/client/stream-definition.ts'
 import {
   formatTime, ProcessConsoleView, truncate, type ProcessConsoleViewProps,
 } from '../src/client/ProcessConsoleView.tsx'
@@ -21,9 +22,21 @@ const nodes: ConversationNode[] = [
   } as ConversationNode,
 ]
 
-function conversation(partial: Partial<ConversationSnapshot>): ConversationSnapshot {
+const external: ExternalProcess = {
+  childId: 'ext-1234-abcd', provider: 'claude-code', firstSeq: 3, firstTime: 1000, lastTime: 1800, done: true,
+  steps: [
+    { seq: 3, time: 1000, index: 0, kind: 'assistant', text: 'Reading the file.', name: undefined, callId: undefined, isError: false, meta: undefined, truncated: false },
+    { seq: 4, time: 1200, index: 1, kind: 'tool-call', text: '{"path":"x"}', name: 'Read', callId: 'k1', isError: false, meta: undefined, truncated: false },
+    { seq: 5, time: 1800, index: 2, kind: 'tool-result', text: 'contents', name: undefined, callId: 'k1', isError: false, meta: undefined, truncated: false },
+  ],
+}
+
+function conversation(partial: Partial<ConversationSnapshot>, externals: ExternalProcess[] = []): ConversationSnapshot {
+  const views = { get: (target: string) => (target === 'process-console'
+    ? { externals: new Map(externals.map(item => [item.childId, item])) }
+    : undefined) }
   return {
-    nodes, partial: null, runningCalls: [], pending: [], openState: 'open', openError: null, hasMore: false, running: false,
+    nodes, partial: null, runningCalls: [], pending: [], openState: 'open', openError: null, hasMore: false, running: false, views,
     ...partial,
   } as unknown as ConversationSnapshot
 }
@@ -38,9 +51,10 @@ function list(): SessionListState {
   } as unknown as SessionListState
 }
 
-function renderView(options: { hasMore?: boolean; childState?: ConversationSnapshot['openState'] } = {}) {
+function renderView(options: { hasMore?: boolean; childState?: ConversationSnapshot['openState']; externals?: ExternalProcess[] } = {}) {
+  const rootSnapshot = conversation({ hasMore: options.hasMore ?? false }, options.externals ?? [])
   const snapshots = new Map<SessionId, ConversationSnapshot>([
-    [id('root'), conversation({ hasMore: options.hasMore ?? false })],
+    [id('root'), rootSnapshot],
     [id('child'), conversation({ nodes: [], openState: options.childState ?? 'open' })],
   ])
   const source = createProcessSource(sessionId => {
@@ -60,6 +74,7 @@ function renderView(options: { hasMore?: boolean; childState?: ConversationSnaps
   const loadOlder = vi.fn(async () => true)
   const props = {
     sessionId: id('root'),
+    useSession: <R,>(pick: (state: ConversationSnapshot) => R) => pick(rootSnapshot),
     useSessions: <R,>(pick: (state: SessionListState) => R) => pick(listState),
     useProcess: <R,>(pick: (state: ProcessSnapshot) => R) => pick(source.getSnapshot()),
     select,
@@ -125,6 +140,35 @@ describe('ProcessConsoleView', () => {
     fireEvent.click(screen.getByRole('button', { name: en['console.loadOlder'] }))
     expect(loadOlder).toHaveBeenCalledTimes(1)
     await Promise.resolve()
+  })
+})
+
+describe('external delegations', () => {
+  it('lists a delegation under its parent and prints its own console when selected', () => {
+    const { select, rerender } = renderView({ externals: [external] })
+
+    const tree = screen.getByRole('navigation', { name: en['tree.title'] })
+    expect(tree.textContent).toContain('claude-code · ext-1234')
+    expect(tree.textContent).toContain(`${en['tree.delegation']} · ${en['tree.done']}`)
+
+    fireEvent.click(screen.getByRole('button', { name: /claude-code · ext-1234/u }))
+    rerender()
+
+    // Selecting a delegation never re-targets the session source.
+    expect(select).not.toHaveBeenCalled()
+    const rows = screen.getAllByRole('row')
+    expect(rows.map(row => row.textContent)).toEqual([
+      expect.stringContaining('Reading the file.'),
+      expect.stringContaining('Read'),
+      expect.stringContaining('call k1 · 600 ms'),
+    ])
+    expect(screen.getByRole('button', { name: en['console.loadOlder'] })).toHaveProperty('disabled', true)
+
+    // Back to the parent session restores its console.
+    fireEvent.click(screen.getByRole('button', { name: /main · Root task/u }))
+    rerender()
+    expect(select).toHaveBeenCalledWith('root')
+    expect(screen.getAllByRole('row')[0]?.textContent).toContain('hello agent')
   })
 })
 

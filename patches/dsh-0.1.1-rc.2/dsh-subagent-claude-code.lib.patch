@@ -1,0 +1,348 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,6 +1,6 @@
+ import z from "@deepseek-ai/schemastery";
+ import { MAX_TIMER_DELAY_MS } from "@deepseek-ai/dsh-timeout";
+-import { NO_START_CAPABILITIES, assertPositiveFinite, resolveChildCwd, settleRunResult, subprocessRunHandle } from "@deepseek-ai/dsh-subagent";
++import { NO_START_CAPABILITIES, assertPositiveFinite, createSubagentStreamSink, resolveChildCwd, settleRunResult, subprocessRunHandle } from "@deepseek-ai/dsh-subagent";
+ import { randomUUID } from "node:crypto";
+ import { query } from "@anthropic-ai/claude-agent-sdk";
+ import { SessionId } from "@deepseek-ai/dsh-session";
+@@ -223,17 +223,152 @@
+ 	});
+ 	return message.result;
+ }
++function asRecord(value) {
++	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
++}
++function asString(value) {
++	return typeof value === "string" ? value : void 0;
++}
++function stringifyInput(value) {
++	if (typeof value === "string") return value;
++	try {
++		return JSON.stringify(value, null, 2) ?? "";
++	} catch {
++		return String(value);
++	}
++}
++/** Flatten SDK user/tool-result content (string or block list) to text. */
++function contentToText(content) {
++	if (typeof content === "string") return content;
++	if (!Array.isArray(content)) return "";
++	const parts = [];
++	for (const candidate of content) {
++		const block = asRecord(candidate);
++		if (block === void 0) continue;
++		switch (block["type"]) {
++			case "text":
++				parts.push(asString(block["text"]) ?? "");
++				break;
++			case "image":
++				parts.push("[image]");
++				break;
++			default: parts.push(stringifyInput(block));
++		}
++	}
++	return parts.join("\n");
++}
+ /**
+-* Consume the complete SDK stream and require one strict success plus normal
+-* iterator completion.
+-* @param query - published official SDK query.
+-* @param onPermissionDenied - records a safe fact when the SDK reports native denial.
+-* @param onResult - records that the SDK supplied a terminal result message.
+-* @returns the completed shared result.
+-*/
+-async function consumeClaudeQuery(query, onPermissionDenied, onResult) {
++* Translate one SDK message into provider-neutral child steps.
++*
++* Reads the SDK shapes defensively: the stream is presentation only, so a
++* field the pinned SDK renames must degrade to a blank step, never break the
++* run. Progress, status, hook and task notifications yield nothing.
++* @param message - one message from the official SDK stream.
++* @returns zero or more steps, in message order.
++*/
++function mapClaudeMessage(message) {
++	const raw = message;
++	switch (raw["type"]) {
++		case "system":
++			if (raw["subtype"] === "init") {
++				const tools = Array.isArray(raw["tools"]) ? raw["tools"].length : 0;
++				const model = asString(raw["model"]) ?? "unknown model";
++				return [{
++					kind: "system",
++					text: `claude-code ${asString(raw["claude_code_version"]) ?? ""} · ${model} · cwd ${asString(raw["cwd"]) ?? ""} · ${tools} tools`,
++					meta: {
++						model,
++						claudeCodeVersion: asString(raw["claude_code_version"]) ?? null
++					}
++				}];
++			}
++			if (raw["subtype"] === "permission_denied") {
++				const name = asString(raw["tool_name"]);
++				const callId = asString(raw["tool_use_id"]);
++				return [{
++					kind: "system",
++					text: asString(raw["message"]) ?? "permission denied",
++					isError: true,
++					...name === void 0 ? {} : { name },
++					...callId === void 0 ? {} : { callId }
++				}];
++			}
++			return [];
++		case "assistant": {
++			const content = asRecord(raw["message"])?.["content"];
++			if (!Array.isArray(content)) return [];
++			const items = [];
++			for (const candidate of content) {
++				const block = asRecord(candidate);
++				if (block === void 0) continue;
++				switch (block["type"]) {
++					case "text":
++						items.push({
++							kind: "assistant",
++							text: asString(block["text"]) ?? ""
++						});
++						break;
++					case "thinking":
++						items.push({
++							kind: "thought",
++							text: asString(block["thinking"]) ?? ""
++						});
++						break;
++					case "tool_use":
++					case "server_tool_use": {
++						const callId = asString(block["id"]);
++						items.push({
++							kind: "tool-call",
++							name: asString(block["name"]) ?? "tool",
++							text: stringifyInput(block["input"]),
++							...callId === void 0 ? {} : { callId }
++						});
++						break;
++					}
++					default: break;
++				}
++			}
++			return items;
++		}
++		case "user": {
++			const content = asRecord(raw["message"])?.["content"];
++			if (!Array.isArray(content)) return [];
++			const items = [];
++			for (const candidate of content) {
++				const block = asRecord(candidate);
++				if (block?.["type"] !== "tool_result") continue;
++				const callId = asString(block["tool_use_id"]);
++				items.push({
++					kind: "tool-result",
++					text: contentToText(block["content"]),
++					isError: block["is_error"] === true,
++					...callId === void 0 ? {} : { callId }
++				});
++			}
++			return items;
++		}
++		case "result": {
++			const subtype = asString(raw["subtype"]) ?? "unknown";
++			const errors = Array.isArray(raw["errors"]) ? raw["errors"].map(String) : [];
++			return [{
++				kind: "result",
++				text: subtype === "success" ? asString(raw["result"]) ?? "" : errors.join("\n"),
++				isError: raw["is_error"] === true || subtype !== "success",
++				meta: {
++					subtype,
++					durationMs: typeof raw["duration_ms"] === "number" ? raw["duration_ms"] : null,
++					numTurns: typeof raw["num_turns"] === "number" ? raw["num_turns"] : null,
++					costUsd: typeof raw["total_cost_usd"] === "number" ? raw["total_cost_usd"] : null
++				}
++			}];
++		}
++		default: return [];
++	}
++}
++async function consumeClaudeQuery(query, onPermissionDenied, onResult, onMessage) {
+ 	let answer;
+ 	for await (const message of query) {
++		onMessage?.(message);
+ 		if (message.type === "system" && message.subtype === "permission_denied") {
+ 			onPermissionDenied?.();
+ 			continue;
+@@ -334,6 +469,10 @@
+ async function startClaudeCodeRun(request, spec) {
+ 	const prompt = textTask(request.prompt);
+ 	if (request.signal.aborted) throw new Error("subagent-claude-code: request was aborted before SDK startup");
++	const childId = SessionId(randomUUID());
++	const observe = spec.onStream === void 0 ? void 0 : (message) => {
++		for (const item of mapClaudeMessage(message)) spec.onStream?.(item, childId);
++	};
+ 	const controller = new AbortController();
+ 	const requestCancel = () => {
+ 		if (!controller.signal.aborted) controller.abort(/* @__PURE__ */ new Error("subagent-claude-code: run cancelled locally"));
+@@ -437,45 +576,44 @@
+ 	const publishedQuery = query$1;
+ 	const publishedChild = child;
+ 	let receivedResult = false;
+-	const result = settleRunResult({
+-		attempt: async () => {
+-			try {
+-				return await consumeClaudeQuery(publishedQuery, () => {
+-					capturePermissionDiagnostic(unattendedDiagnostic(spec.permissionMode, "tool permission", "denied", "Claude Code denied the request before an interactive prompt"));
+-				}, () => {
+-					receivedResult = true;
+-				});
+-			} catch (error) {
+-				const processOutcome = managedProcess?.outcome;
+-				let facts;
+-				if (error instanceof ClaudeCodeFailure) facts = {
+-					...error.facts,
+-					outcome: processOutcome
+-				};
+-				else if (processOutcome !== void 0 && !receivedResult) facts = {
+-					stage: "process",
+-					category: "process-exit",
+-					outcome: processOutcome
+-				};
+-				else facts = {
+-					stage: "query-run",
+-					category: "unknown",
+-					outcome: processOutcome
+-				};
+-				prependFailureDiagnostic(facts);
+-				throw error instanceof ClaudeCodeFailure ? error : new ClaudeCodeFailure(facts, thrown(error));
+-			}
+-		},
+-		collectOutput: () => [],
+-		collectDiagnostic: () => diagnostic,
+-		cancelled: () => controller.signal.aborted,
+-		onError: spec.onError,
+-		signal: request.signal,
+-		onAbort
+-	});
+ 	return subprocessRunHandle({
+-		id: SessionId(randomUUID()),
+-		result,
++		id: childId,
++		result: settleRunResult({
++			attempt: async () => {
++				try {
++					return await consumeClaudeQuery(publishedQuery, () => {
++						capturePermissionDiagnostic(unattendedDiagnostic(spec.permissionMode, "tool permission", "denied", "Claude Code denied the request before an interactive prompt"));
++					}, () => {
++						receivedResult = true;
++					}, observe);
++				} catch (error) {
++					const processOutcome = managedProcess?.outcome;
++					let facts;
++					if (error instanceof ClaudeCodeFailure) facts = {
++						...error.facts,
++						outcome: processOutcome
++					};
++					else if (processOutcome !== void 0 && !receivedResult) facts = {
++						stage: "process",
++						category: "process-exit",
++						outcome: processOutcome
++					};
++					else facts = {
++						stage: "query-run",
++						category: "unknown",
++						outcome: processOutcome
++					};
++					prependFailureDiagnostic(facts);
++					throw error instanceof ClaudeCodeFailure ? error : new ClaudeCodeFailure(facts, thrown(error));
++				}
++			},
++			collectOutput: () => [],
++			collectDiagnostic: () => diagnostic,
++			cancelled: () => controller.signal.aborted,
++			onError: spec.onError,
++			signal: request.signal,
++			onAbort
++		}),
+ 		signal: request.signal,
+ 		onAbort,
+ 		requestCancel,
+@@ -491,6 +629,38 @@
+ 	});
+ }
+ //#endregion
++//#region lib/types/session-permissions.js
++/**
++* Resolve the native Claude Code mode for one delegated run.
++*
++* Only the explicit DSH Full pair can elevate a configured safe fallback.
++* Partial, malformed, and less-permissive session state keeps the deployment
++* fallback.
++*
++* @param fallback - Provider mode configured by the deployment.
++* @param inheritSessionPermissions - Whether this provider accepts DSH Full.
++* @param events - Parent session log in chronological order.
++* @returns The native mode for this run.
++*/
++function resolveClaudePermissionMode(fallback, inheritSessionPermissions, events) {
++	if (!inheritSessionPermissions) return fallback;
++	let sandbox;
++	let approval;
++	for (let index = events.length - 1; index >= 0; index -= 1) {
++		const event = events[index];
++		if (!isRecord(event)) continue;
++		const data = event["data"];
++		if (!isRecord(data)) continue;
++		if (sandbox === void 0 && event["type"] === "sandbox/mode") sandbox = data["mode"];
++		if (approval === void 0 && event["type"] === "approval/policy") approval = data["policy"];
++		if (sandbox !== void 0 && approval !== void 0) break;
++	}
++	return sandbox === "danger-full-access" && approval === "never" ? "bypassPermissions" : fallback;
++}
++function isRecord(value) {
++	return value !== null && typeof value === "object" && !Array.isArray(value);
++}
++//#endregion
+ //#region lib/types/index.js
+ /**
+ * Profile-named Claude Code one-shot subagent provider. Every accepted run
+@@ -506,6 +676,7 @@
+ 	providerName: z.string().min(1).default(DEFAULT_PROVIDER_NAME),
+ 	env: z.dict(z.string()).default({}),
+ 	permissionMode: z.union([...CLAUDE_CODE_PERMISSION_MODES]).default(DEFAULT_CLAUDE_CODE_PERMISSION_MODE),
++	inheritSessionPermissions: z.boolean().default(false),
+ 	disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS)
+ });
+ var ClaudeCodeProvider = class {
+@@ -531,16 +702,24 @@
+ 			this.ctx.logger.warn(`subagent-claude-code "${this.name}": child start failed: %o`, failure);
+ 			throw failure;
+ 		}
+-		return startClaudeCodeRun(request, {
++		const spec = {
+ 			cwd,
+-			permissionMode: this.config.permissionMode,
++			permissionMode: resolveClaudePermissionMode(this.config.permissionMode, this.config.inheritSessionPermissions, request.parent.session.events),
+ 			env: this.config.env,
+ 			disposeGraceMs: this.config.disposeGraceMs,
+ 			spawn: (spawnSpec) => this.ctx.subprocess.spawn(spawnSpec),
+ 			onError: (error, stopReason) => {
+ 				this.ctx.logger.warn(`subagent-claude-code "${this.name}": child run failed (${stopReason}): %o`, error);
++			},
++			onStream: (item, childId) => {
++				sink ??= createSubagentStreamSink(request.parent.session, childId, this.name, (error) => {
++					this.ctx.logger.warn(`subagent-claude-code "${this.name}": child stream not recorded: %o`, error);
++				});
++				sink(item);
+ 			}
+-		});
++		};
++		let sink;
++		return startClaudeCodeRun(request, spec);
+ 	}
+ };
+ /**
+@@ -553,6 +732,7 @@
+ 		providerName: config.providerName ?? DEFAULT_PROVIDER_NAME,
+ 		env: config.env,
+ 		permissionMode: config.permissionMode ?? "dontAsk",
++		inheritSessionPermissions: config.inheritSessionPermissions ?? false,
+ 		disposeGraceMs: config.disposeGraceMs
+ 	};
+ 	assertPositiveFinite("subagent-claude-code", "disposeGraceMs", resolved.disposeGraceMs);

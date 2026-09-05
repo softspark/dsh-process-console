@@ -58,3 +58,28 @@ describe('buildProcessTree', () => {
     expect(buildProcessTree(list, id('x')).map(entry => entry.id)).toEqual(['x', 'y'])
   })
 })
+
+describe('withExternals', () => {
+  it('places each parent\'s delegations directly under its row', async () => {
+    const { withExternals } = await import('../src/client/process-tree.ts')
+    const entries = [
+      { id: id('root'), parentId: null, depth: 0, label: 'Root', running: true, agentPreset: undefined, subagent: false },
+      { id: id('a'), parentId: id('root'), depth: 1, label: 'A', running: false, agentPreset: undefined, subagent: true },
+    ]
+    const external = (childId: string, done: boolean) => ({
+      childId, provider: 'claude-code', firstSeq: 1, firstTime: 1, lastTime: 2, steps: [], done,
+    })
+    const rows = withExternals(entries, new Map([
+      [id('root'), new Map([['x1', external('x1', false)]])],
+      [id('a'), new Map([['x2', external('x2', true)]])],
+    ]), process => `ext ${process.childId}`)
+
+    expect(rows.map(row => [row.kind, row.id, row.depth, row.running, row.label])).toEqual([
+      ['session', 'root', 0, true, 'Root'],
+      ['external', 'x1', 1, true, 'ext x1'],
+      ['session', 'a', 1, false, 'A'],
+      ['external', 'x2', 2, false, 'ext x2'],
+    ])
+    expect(rows[1]).toMatchObject({ parentId: 'root', provider: 'claude-code' })
+  })
+})

@@ -1,0 +1,187 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -2113,19 +2113,19 @@
+ /** Maximum UTF-8 size of {@link SubagentResult.diagnostic}. */
+ const MAX_SUBAGENT_DIAGNOSTIC_BYTES = 4096;
+ const DIAGNOSTIC_TRUNCATION_SUFFIX = "\n[diagnostic truncated]";
+-const utf8Encoder = new TextEncoder();
+-const utf8Decoder = new TextDecoder();
++const utf8Encoder$1 = new TextEncoder();
++const utf8Decoder$1 = new TextDecoder();
+ /**
+ * Limit provider-authored failure detail without splitting a UTF-8 sequence.
+ * @param diagnostic - safe diagnostic text produced by the provider.
+ * @returns the original text, or a visibly truncated value within the limit.
+ */
+ function limitSubagentDiagnostic(diagnostic) {
+-	const bytes = utf8Encoder.encode(diagnostic);
++	const bytes = utf8Encoder$1.encode(diagnostic);
+ 	if (bytes.byteLength <= MAX_SUBAGENT_DIAGNOSTIC_BYTES) return diagnostic;
+-	let prefixBytes = MAX_SUBAGENT_DIAGNOSTIC_BYTES - utf8Encoder.encode(DIAGNOSTIC_TRUNCATION_SUFFIX).byteLength;
++	let prefixBytes = MAX_SUBAGENT_DIAGNOSTIC_BYTES - utf8Encoder$1.encode(DIAGNOSTIC_TRUNCATION_SUFFIX).byteLength;
+ 	while ((bytes[prefixBytes] & 192) === 128) prefixBytes -= 1;
+-	return utf8Decoder.decode(bytes.subarray(0, prefixBytes)) + DIAGNOSTIC_TRUNCATION_SUFFIX;
++	return utf8Decoder$1.decode(bytes.subarray(0, prefixBytes)) + DIAGNOSTIC_TRUNCATION_SUFFIX;
+ }
+ /**
+ * The capability advertisement of an out-of-process backend: NONE. A child in
+@@ -2275,6 +2275,153 @@
+ 	};
+ }
+ //#endregion
++//#region lib/types/stream.js
++/**
++* The `subagent/stream` session event: one observed step of an out-of-process
++* child, appended to the DELEGATING PARENT's log by the provider that owns the
++* child's stream.
++*
++* Out-of-process one-shot children (Claude Code, ACP agents) have no session
++* of their own in the parent's corpus; without this event the parent log keeps
++* only the delegation call and its final answer. The event is log-only and
++* `ignorable`: it never enters model history, `deriveMessages()` ignores it,
++* and a harness that does not know the type skips it instead of refusing the
++* log. Every text field is bounded, so a verbose child cannot inflate the
++* parent log without limit.
++* @module @deepseek-ai/dsh-subagent/stream
++*/
++/** Upper bound of one item's `text` in UTF-8 bytes. */
++const MAX_SUBAGENT_STREAM_TEXT_BYTES = 16384;
++/** Upper bound of one item's serialized `meta` in UTF-8 bytes; larger metadata is dropped. */
++const MAX_SUBAGENT_STREAM_META_BYTES = 2048;
++const TRUNCATION_SUFFIX = "\n[stream text truncated]";
++const utf8Encoder = new TextEncoder();
++const utf8Decoder = new TextDecoder();
++/**
++* Cut `text` to the byte bound on a UTF-8 character boundary.
++* @param text - the candidate text.
++* @returns the text that fits plus whether anything was cut.
++*/
++function limitSubagentStreamText(text) {
++	const bytes = utf8Encoder.encode(text);
++	if (bytes.byteLength <= 16384) return {
++		text,
++		truncated: false
++	};
++	let prefixBytes = MAX_SUBAGENT_STREAM_TEXT_BYTES - utf8Encoder.encode(TRUNCATION_SUFFIX).byteLength;
++	while ((bytes[prefixBytes] & 192) === 128) prefixBytes -= 1;
++	return {
++		text: utf8Decoder.decode(bytes.subarray(0, prefixBytes)) + TRUNCATION_SUFFIX,
++		truncated: true
++	};
++}
++function isAppendable(log) {
++	return typeof log === "object" && log !== null && typeof log.append === "function";
++}
++/**
++* Build the sink that appends one child's steps to the parent log.
++*
++* A parent without an appendable session (a test stub, an unusual host) gets
++* a no-op sink: the stream is a courtesy, never a precondition of the run.
++* An append failure is reported once through `onError` and then silences the
++* sink for the rest of the run, so a broken log cannot turn every child step
++* into a thrown error inside the provider's stream loop.
++* @param parentSession - the delegating parent's session (`request.parent.session`).
++* @param childId - the run's child id.
++* @param provider - the provider registry name.
++* @param onError - receives the first append failure.
++* @returns the sink.
++*/
++function createSubagentStreamSink(parentSession, childId, provider, onError) {
++	if (!isAppendable(parentSession)) return () => {};
++	let index = 0;
++	let broken = false;
++	return (item) => {
++		if (broken) return;
++		const bounded = boundItem(item);
++		try {
++			parentSession.append("subagent/stream", {
++				childId,
++				provider,
++				index: index++,
++				item: bounded.item,
++				...bounded.truncated ? { truncated: true } : {}
++			}, { ignorable: true });
++		} catch (error) {
++			broken = true;
++			onError?.(error instanceof Error ? error : new Error(String(error)));
++		}
++	};
++}
++function boundItem(item) {
++	let truncated = false;
++	const out = { kind: item.kind };
++	if (item.text !== void 0) {
++		const limited = limitSubagentStreamText(item.text);
++		out.text = limited.text;
++		truncated = limited.truncated;
++	}
++	if (item.name !== void 0) out.name = item.name.slice(0, 256);
++	if (item.callId !== void 0) out.callId = item.callId.slice(0, 256);
++	if (item.isError !== void 0) out.isError = item.isError;
++	if (item.meta !== void 0) {
++		let serialized;
++		try {
++			serialized = JSON.stringify(item.meta);
++		} catch {
++			serialized = void 0;
++		}
++		if (serialized !== void 0 && utf8Encoder.encode(serialized).byteLength <= 2048) out.meta = item.meta;
++		else truncated = true;
++	}
++	return {
++		item: out,
++		truncated
++	};
++}
++/** Default flush threshold of {@link coalesceSubagentStream}. */
++const SUBAGENT_STREAM_COALESCE_CHARS = 1024;
++/**
++* Merge consecutive text fragments of the same kind into one item.
++*
++* Chunked protocols (ACP) deliver assistant and thought text a few characters
++* at a time; one log event per fragment would flood the parent log. Fragments
++* accumulate until the kind changes, a non-text item arrives, the buffer
++* reaches `maxChars`, or `flush()` is called at the end of the run.
++* @param sink - the downstream sink.
++* @param maxChars - flush threshold in UTF-16 code units.
++* @returns the coalescing front plus its explicit flush.
++*/
++function coalesceSubagentStream(sink, maxChars = SUBAGENT_STREAM_COALESCE_CHARS) {
++	let pendingKind;
++	let pending = [];
++	const flush = () => {
++		if (pendingKind === void 0) return;
++		const kind = pendingKind;
++		const text = pending.join("");
++		pendingKind = void 0;
++		pending = [];
++		sink({
++			kind,
++			text
++		});
++	};
++	return {
++		push: (item) => {
++			if (!((item.kind === "assistant" || item.kind === "thought") && item.text !== void 0 && item.name === void 0 && item.callId === void 0 && item.meta === void 0 && item.isError === void 0)) {
++				flush();
++				sink(item);
++				return;
++			}
++			if (pendingKind !== void 0 && pendingKind !== item.kind) flush();
++			pendingKind = item.kind;
++			pending.push(item.text);
++			if (pending.reduce((total, part) => total + part.length, 0) >= maxChars) flush();
++		},
++		flush
++	};
++}
++//#endregion
+ //#region lib/types/run-settlement.js
+ /**
+ * Settlement of one ONE-SHOT subagent run into a background-Task outcome. Only
+@@ -2672,4 +2819,4 @@
+ 	}
+ };
+ //#endregion
+-export { AssistantOutputFold, NO_START_CAPABILITIES, SUBAGENT_DESCRIPTOR_VERSION, SubagentDepthError, SubagentError, SubagentRunId, SubagentRuntime, SubagentRuntime as default, appendDelegatedPolicyOverrides, applyChildComposition, assertPositiveFinite, assertSubagentMaxDepth, assertUsableCwd, captureDelegatedPolicyOverrides, childSessionMeta, delegationDepthOf, finalAssistantOutput, foldSubagentDescriptor, resolveChildAgentOptions, resolveChildCwd, resolveChildDepth, seedDescriptorTurn, settleRun, settleRunResult, snapshotSubagentDescriptor, subprocessRunHandle, validateConfiguredCwd };
++export { AssistantOutputFold, MAX_SUBAGENT_STREAM_META_BYTES, MAX_SUBAGENT_STREAM_TEXT_BYTES, NO_START_CAPABILITIES, SUBAGENT_DESCRIPTOR_VERSION, SUBAGENT_STREAM_COALESCE_CHARS, SubagentDepthError, SubagentError, SubagentRunId, SubagentRuntime, SubagentRuntime as default, appendDelegatedPolicyOverrides, applyChildComposition, assertPositiveFinite, assertSubagentMaxDepth, assertUsableCwd, captureDelegatedPolicyOverrides, childSessionMeta, coalesceSubagentStream, createSubagentStreamSink, delegationDepthOf, finalAssistantOutput, foldSubagentDescriptor, limitSubagentStreamText, resolveChildAgentOptions, resolveChildCwd, resolveChildDepth, seedDescriptorTurn, settleRun, settleRunResult, snapshotSubagentDescriptor, subprocessRunHandle, validateConfiguredCwd };

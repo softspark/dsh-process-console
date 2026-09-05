@@ -1,0 +1,1329 @@
+diff --git a/packages/core/session/src/index.ts b/packages/core/session/src/index.ts
+index 2d82a88..da93770 100644
+--- a/packages/core/session/src/index.ts
++++ b/packages/core/session/src/index.ts
+@@ -14,7 +14,7 @@ import type { Scoped } from '@deepseek-ai/dsh-scope'
+ import type { Message } from '@deepseek-ai/dsh-llm'
+ import { SESSION_FORMAT_VERSION, SessionId } from './types.ts'
+ import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
+-import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SurfaceIntent, SurfaceEventType } from './types.ts'
++import type { AppendOptions, CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SurfaceIntent, SurfaceEventType } from './types.ts'
+ import { snapshotJsonValue } from './json.ts'
+ import { deriveEventMessage, SurfaceManager } from './surface.ts'
+ import type { SessionSurface } from './surface.ts'
+@@ -604,13 +604,18 @@ export class Session {
+   append<T extends SessionEventType>(
+     type: T,
+     data: SessionEventMap[T],
+-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
++    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : [opts?: AppendOptions]
+   ): SessionEvent<T> {
+-    const surfaceOpts: SurfaceIntent | undefined = opts[0]
++    const options = opts[0] as (Partial<SurfaceIntent> & AppendOptions) | undefined
++    const surfaceOpts: Partial<SurfaceIntent> | undefined = options
+     const surfaceMetadata = {
+       ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
+       ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
+     }
++    const ignorable = options?.ignorable === true
++    if (ignorable && surfaceOpts?.surfaceOp !== undefined) {
++      throw new Error(`session event "${type}" cannot be both a surface event and ignorable`)
++    }
+     const dataSnapshot = snapshotJsonValue(data)
+     if (dataSnapshot === undefined) {
+       throw new Error(`session event "${type}" carries non-JSON-serializable data`)
+@@ -629,6 +634,7 @@ export class Session {
+       seq: this.log.length,
+       time: Date.now(),
+       data: dataSnapshot,
++      ...(ignorable ? { ignorable: true as const } : {}),
+       ...(surfaceMetadataSnapshot as { surfaceOp?: unknown; sourceEventSeqs?: unknown }),
+     } as unknown as SessionEvent<T>)
+     this.surfaceManager.validateNext(event as SessionEvent)
+diff --git a/packages/core/session/src/types.ts b/packages/core/session/src/types.ts
+index 31ce28a..69451b3 100644
+--- a/packages/core/session/src/types.ts
++++ b/packages/core/session/src/types.ts
+@@ -392,6 +392,18 @@ export interface SurfaceIntent {
+   sourceEventSeqs?: number[]
+ }
+ 
++/**
++ * Envelope options for a log-only {@link Session.append}. `ignorable` stamps
++ * the {@link SessionEvent.ignorable} marker, so a reader that does not know
++ * the event `type` skips it instead of refusing the whole log. A plugin event
++ * whose absence never changes how the rest of the log is interpreted (a
++ * diagnostic stream, a presentation-only record) should set it; a required
++ * event must not.
++ */
++export interface AppendOptions {
++  ignorable?: true
++}
++
+ /**
+  * One immutable entry in the session log.
+  *
+diff --git a/packages/subagent/subagent-acp/src/index.ts b/packages/subagent/subagent-acp/src/index.ts
+index 4b52627..20e83a5 100644
+--- a/packages/subagent/subagent-acp/src/index.ts
++++ b/packages/subagent/subagent-acp/src/index.ts
+@@ -11,11 +11,13 @@ import { accessSync, constants, statSync } from 'node:fs'
+ import { isAbsolute, resolve } from 'node:path'
+ import type { Context } from '@deepseek-ai/cordis'
+ import z from '@deepseek-ai/schemastery'
++import { createSubagentStreamSink } from '@deepseek-ai/dsh-subagent'
+ import type {
+   ResolvedSubagentStartRequest,
+   SubagentCapabilities,
+   SubagentProvider,
+   SubagentStartRequest,
++  SubagentStreamSink,
+ } from '@deepseek-ai/dsh-subagent'
+ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+ import { type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.ts'
+@@ -165,7 +167,17 @@ class AcpProvider implements SubagentProvider {
+         // flattened to a stop reason — preserve it here rather than losing it.
+         this.ctx.logger.warn(`subagent-acp "${this.name}": child run failed (${stopReason}): ${error.message}`)
+       },
++      // The child's steps land in the delegating parent's log as ignorable
++      // `subagent/stream` events; a parent without an appendable session
++      // yields a no-op sink and the run proceeds unchanged.
++      onStream: (item, childId) => {
++        sink ??= createSubagentStreamSink(request.parent.session, childId, this.name, (error) => {
++          this.ctx.logger.warn(`subagent-acp "${this.name}": child stream not recorded: ${error.message}`)
++        })
++        sink(item)
++      },
+     }
++    let sink: SubagentStreamSink | undefined
+     return startAcpRun(request, spec)
+   }
+ }
+diff --git a/packages/subagent/subagent-acp/src/run.ts b/packages/subagent/subagent-acp/src/run.ts
+index 5ba7bc1..7dda892 100644
+--- a/packages/subagent/subagent-acp/src/run.ts
++++ b/packages/subagent/subagent-acp/src/run.ts
+@@ -24,8 +24,10 @@ import {
+ } from '@agentclientprotocol/sdk'
+ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+ import { SessionId } from '@deepseek-ai/dsh-session'
+-import { AssistantOutputFold } from '@deepseek-ai/dsh-subagent'
+-import type { SubagentResult, SubagentRun, SubagentStartRequest, SubagentStopReason } from '@deepseek-ai/dsh-subagent'
++import { AssistantOutputFold, coalesceSubagentStream } from '@deepseek-ai/dsh-subagent'
++import type {
++  SubagentResult, SubagentRun, SubagentStartRequest, SubagentStopReason, SubagentStreamItem,
++} from '@deepseek-ai/dsh-subagent'
+ import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+ 
+ /** Fixed response to child permission requests: reject by default, or select the first allow option. */
+@@ -83,6 +85,118 @@ export interface AcpRunSpec {
+    * Optional — omitted in a unit test that asserts the stop reason directly.
+    */
+   onError?: (error: Error, stopReason: SubagentStopReason) => void
++  /**
++   * Receives each observed step of the child, with the run's child id.
++   * Consecutive text fragments of one kind arrive merged. Absent means the
++   * parent log keeps only the final answer.
++   */
++  onStream?: (item: SubagentStreamItem, childId: SessionId) => void
++}
++
++/** The ACP session update union, derived from the notification so a schema rename fails here. */
++type AcpSessionUpdate = SessionNotification['update']
++
++function asAcpRecord(value: unknown): Record<string, unknown> | undefined {
++  return typeof value === 'object' && value !== null && !Array.isArray(value)
++    ? value as Record<string, unknown>
++    : undefined
++}
++
++function acpJson(value: unknown): string {
++  if (value === undefined) return ''
++  if (typeof value === 'string') return value
++  try {
++    return JSON.stringify(value, null, 2) ?? ''
++  } catch {
++    return String(value)
++  }
++}
++
++/** Flatten ACP tool-call content (content blocks, diffs, terminal refs) to text. */
++function acpToolContentText(content: unknown): string {
++  if (!Array.isArray(content)) return ''
++  const parts: string[] = []
++  for (const candidate of content) {
++    const entry = asAcpRecord(candidate)
++    if (entry === undefined) continue
++    switch (entry['type']) {
++      case 'content': {
++        const block = asAcpRecord(entry['content'])
++        if (block?.['type'] === 'text' && typeof block['text'] === 'string') parts.push(block['text'])
++        break
++      }
++      case 'diff': {
++        const path = typeof entry['path'] === 'string' ? entry['path'] : ''
++        const oldText = typeof entry['oldText'] === 'string' ? entry['oldText'] : ''
++        const newText = typeof entry['newText'] === 'string' ? entry['newText'] : ''
++        parts.push(`--- ${path}\n${oldText}\n+++ ${path}\n${newText}`)
++        break
++      }
++      case 'terminal':
++        parts.push(`[terminal ${typeof entry['terminalId'] === 'string' ? entry['terminalId'] : ''}]`)
++        break
++      default:
++        break
++    }
++  }
++  return parts.join('\n')
++}
++
++/**
++ * Translate one ACP session update into a provider-neutral child step.
++ *
++ * Message and thought chunks become text fragments (the driver merges runs of
++ * them); a tool call becomes a `tool-call`; an update that settles a call
++ * becomes a `tool-result`; a plan becomes one `plan` step. Mode, command,
++ * config and usage updates yield nothing.
++ * @param update - one `session/update` payload.
++ * @returns the step, or `undefined` when the update carries nothing to show.
++ */
++export function mapAcpUpdate(update: AcpSessionUpdate): SubagentStreamItem | undefined {
++  const raw = update as unknown as Record<string, unknown>
++  switch (raw['sessionUpdate']) {
++    case 'agent_message_chunk':
++      return { kind: 'assistant', text: acpContentText(raw['content'] as AcpContentBlock) }
++    case 'agent_thought_chunk':
++      return { kind: 'thought', text: acpContentText(raw['content'] as AcpContentBlock) }
++    case 'user_message_chunk':
++      return { kind: 'other', text: acpContentText(raw['content'] as AcpContentBlock) }
++    case 'tool_call': {
++      const status = typeof raw['status'] === 'string' ? raw['status'] : 'pending'
++      return {
++        kind: 'tool-call',
++        name: typeof raw['title'] === 'string' ? raw['title'] : 'tool',
++        callId: String(raw['toolCallId'] ?? ''),
++        text: acpJson(raw['rawInput']),
++        meta: { status, toolKind: typeof raw['kind'] === 'string' ? raw['kind'] : null },
++      }
++    }
++    case 'tool_call_update': {
++      const status = typeof raw['status'] === 'string' ? raw['status'] : undefined
++      const contentText = acpToolContentText(raw['content'])
++      const text = contentText !== '' ? contentText : acpJson(raw['rawOutput'])
++      if (status !== 'completed' && status !== 'failed' && text === '') return undefined
++      return {
++        kind: 'tool-result',
++        callId: String(raw['toolCallId'] ?? ''),
++        text,
++        isError: status === 'failed',
++        ...(typeof raw['title'] === 'string' ? { name: raw['title'] } : {}),
++        meta: { status: status ?? null },
++      }
++    }
++    case 'plan':
++    case 'plan_update': {
++      const entries = Array.isArray(raw['entries']) ? raw['entries'] : []
++      const lines = entries.map((candidate) => {
++        const entry = asAcpRecord(candidate)
++        return `- [${String(entry?.['status'] ?? '')}] ${String(entry?.['content'] ?? '')}`
++      })
++      return { kind: 'plan', text: lines.join('\n') }
++    }
++    default:
++      return undefined
++  }
+ }
+ 
+ /** EOF grace for child flush and nested-process teardown; wider than the signal grace below. */
+@@ -202,6 +316,8 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
+   // is minted in the parent namespace so fresh processes cannot collide with
+   // each other or with a local agent that happens to use the same session id.
+   const id = SessionId(randomUUID())
++  // Child steps for the parent log: chunk runs merge before they leave the driver.
++  const stream = coalesceSubagentStream((item) => { spec.onStream?.(item, id) })
+ 
+   // Keep diagnostics on parent stderr ('inherit'); only ACP output contributes
+   // to the result. The seam's scrub drops ambient credentials and DSH_* names
+@@ -245,8 +361,12 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
+       if (update.sessionUpdate === 'agent_message_chunk') {
+         fold.pushText(acpContentText(update.content))
+       }
+-      // Other updates (thoughts, tool calls, plans) are consumed but not
+-      // surfaced — the subagent returns only its final answer.
++      // The result still carries only the final answer; every other update
++      // reaches the parent log through the stream sink when one is wired.
++      if (spec.onStream !== undefined) {
++        const item = mapAcpUpdate(update)
++        if (item !== undefined) stream.push(item)
++      }
+       return Promise.resolve()
+     },
+     requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+@@ -327,11 +447,15 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
+       const prompt = async (): Promise<SubagentResult> => {
+         // The startup phase cannot fulfill without assigning the session id.
+         const promptResult = await conn.prompt({ sessionId: remoteSessionId, prompt: toAcpPrompt(request.prompt) })
++        stream.flush()
+         return { output: collectOutput(), stopReason: acpStopReason(promptResult.stopReason) }
+       }
+       return await Promise.race([
+         prompt(),
+-        cancelSettled.then((): SubagentResult => ({ output: collectOutput(), stopReason: 'aborted' })),
++        cancelSettled.then((): SubagentResult => {
++          stream.flush()
++          return { output: collectOutput(), stopReason: 'aborted' }
++        }),
+       ])
+     } catch (error: unknown) {
+       // Cover a process rejection already queued when cancellation arrives.
+diff --git a/packages/subagent/subagent-claude-code/src/index.ts b/packages/subagent/subagent-claude-code/src/index.ts
+index 741f93a..67e8935 100644
+--- a/packages/subagent/subagent-claude-code/src/index.ts
++++ b/packages/subagent/subagent-claude-code/src/index.ts
+@@ -11,11 +11,13 @@ import z from '@deepseek-ai/schemastery'
+ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+ import {
+   assertPositiveFinite,
++  createSubagentStreamSink,
+   NO_START_CAPABILITIES,
+   resolveChildCwd,
+   type ResolvedSubagentStartRequest,
+   type SubagentCapabilities,
+   type SubagentProvider,
++  type SubagentStreamSink,
+ } from '@deepseek-ai/dsh-subagent'
+ import {
+   CLAUDE_CODE_PERMISSION_MODES,
+@@ -26,6 +28,7 @@ import {
+   type ClaudeCodePermissionMode,
+   type ClaudeCodeRunSpec,
+ } from './run.ts'
++import { resolveClaudePermissionMode } from './session-permissions.ts'
+ 
+ export const name = 'subagent-claude-code'
+ export const inject = ['subagents', 'subprocess']
+@@ -50,6 +53,11 @@ export interface Config {
+    * `bypassPermissions` explicitly skips permission checks.
+    */
+   permissionMode?: ClaudeCodePermissionMode
++  /**
++   * Elevate this provider to `bypassPermissions` only for a parent session whose
++   * durable permission events record the DSH Full preset.
++   */
++  inheritSessionPermissions?: boolean
+   /** Grace in milliseconds for Claude Code process-tree termination. */
+   disposeGraceMs?: number
+ }
+@@ -59,6 +67,7 @@ export const Config: z<Config> = z.object({
+   env: z.dict(z.string()).default({}),
+   permissionMode: z.union([...CLAUDE_CODE_PERMISSION_MODES])
+     .default(DEFAULT_CLAUDE_CODE_PERMISSION_MODE),
++  inheritSessionPermissions: z.boolean().default(false),
+   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
+ })
+ 
+@@ -106,7 +115,11 @@ class ClaudeCodeProvider implements SubagentProvider {
+     }
+     const spec: ClaudeCodeRunSpec = {
+       cwd,
+-      permissionMode: this.config.permissionMode,
++      permissionMode: resolveClaudePermissionMode(
++        this.config.permissionMode,
++        this.config.inheritSessionPermissions,
++        request.parent.session.events,
++      ),
+       env: this.config.env,
+       disposeGraceMs: this.config.disposeGraceMs,
+       spawn: spawnSpec => this.ctx.subprocess.spawn(spawnSpec),
+@@ -116,7 +129,20 @@ class ClaudeCodeProvider implements SubagentProvider {
+           error,
+         )
+       },
++      // The child's steps land in the delegating parent's log as ignorable
++      // `subagent/stream` events; a parent without an appendable session
++      // yields a no-op sink and the run proceeds unchanged.
++      onStream: (item, childId) => {
++        sink ??= createSubagentStreamSink(request.parent.session, childId, this.name, (error) => {
++          this.ctx.logger.warn(
++            `subagent-claude-code "${this.name}": child stream not recorded: %o`,
++            error,
++          )
++        })
++        sink(item)
++      },
+     }
++    let sink: SubagentStreamSink | undefined
+     return startClaudeCodeRun(request, spec)
+   }
+ }
+@@ -131,6 +157,7 @@ export function apply(ctx: Context, config: Config): void {
+     providerName: config.providerName ?? DEFAULT_PROVIDER_NAME,
+     env: config.env as Record<string, string>,
+     permissionMode: config.permissionMode ?? DEFAULT_CLAUDE_CODE_PERMISSION_MODE,
++    inheritSessionPermissions: config.inheritSessionPermissions ?? false,
+     disposeGraceMs: config.disposeGraceMs as number,
+   }
+   assertPositiveFinite(
+diff --git a/packages/subagent/subagent-claude-code/src/run.ts b/packages/subagent/subagent-claude-code/src/run.ts
+index 3b0a190..10750a8 100644
+--- a/packages/subagent/subagent-claude-code/src/run.ts
++++ b/packages/subagent/subagent-claude-code/src/run.ts
+@@ -24,6 +24,7 @@ import {
+   type SubagentRun,
+   type SubagentStartRequest,
+   type SubagentStopReason,
++  type SubagentStreamItem,
+ } from '@deepseek-ai/dsh-subagent'
+ import {
+   scrubbedParentEnv,
+@@ -160,6 +161,11 @@ export interface ClaudeCodeRunSpec {
+   readonly spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle
+   /** Host diagnostic sink for a product failure kept outside model-visible text. */
+   readonly onError?: (error: Error, stopReason: SubagentStopReason) => void
++  /**
++   * Receives each observed step of the child in stream order, with the run's
++   * child id. Absent means the parent log keeps only the final answer.
++   */
++  readonly onStream?: (item: SubagentStreamItem, childId: SessionId) => void
+ }
+ 
+ function thrown(value: unknown): Error {
+@@ -231,13 +237,162 @@ export function successfulResult(message: SDKResultMessage): string {
+  * @param onResult - records that the SDK supplied a terminal result message.
+  * @returns the completed shared result.
+  */
++type LooseRecord = Record<string, unknown>
++
++function asRecord(value: unknown): LooseRecord | undefined {
++  return typeof value === 'object' && value !== null && !Array.isArray(value)
++    ? value as LooseRecord
++    : undefined
++}
++
++function asString(value: unknown): string | undefined {
++  return typeof value === 'string' ? value : undefined
++}
++
++function stringifyInput(value: unknown): string {
++  if (typeof value === 'string') return value
++  try {
++    return JSON.stringify(value, null, 2) ?? ''
++  } catch {
++    return String(value)
++  }
++}
++
++/** Flatten SDK user/tool-result content (string or block list) to text. */
++function contentToText(content: unknown): string {
++  if (typeof content === 'string') return content
++  if (!Array.isArray(content)) return ''
++  const parts: string[] = []
++  for (const candidate of content) {
++    const block = asRecord(candidate)
++    if (block === undefined) continue
++    switch (block['type']) {
++      case 'text':
++        parts.push(asString(block['text']) ?? '')
++        break
++      case 'image':
++        parts.push('[image]')
++        break
++      default:
++        parts.push(stringifyInput(block))
++    }
++  }
++  return parts.join('\n')
++}
++
++/**
++ * Translate one SDK message into provider-neutral child steps.
++ *
++ * Reads the SDK shapes defensively: the stream is presentation only, so a
++ * field the pinned SDK renames must degrade to a blank step, never break the
++ * run. Progress, status, hook and task notifications yield nothing.
++ * @param message - one message from the official SDK stream.
++ * @returns zero or more steps, in message order.
++ */
++export function mapClaudeMessage(message: SDKMessage): SubagentStreamItem[] {
++  const raw = message as unknown as LooseRecord
++  switch (raw['type']) {
++    case 'system': {
++      if (raw['subtype'] === 'init') {
++        const tools = Array.isArray(raw['tools']) ? raw['tools'].length : 0
++        const model = asString(raw['model']) ?? 'unknown model'
++        return [{
++          kind: 'system',
++          text: `claude-code ${asString(raw['claude_code_version']) ?? ''} · ${model} · cwd ${asString(raw['cwd']) ?? ''} · ${tools} tools`,
++          meta: { model, claudeCodeVersion: asString(raw['claude_code_version']) ?? null },
++        }]
++      }
++      if (raw['subtype'] === 'permission_denied') {
++        const name = asString(raw['tool_name'])
++        const callId = asString(raw['tool_use_id'])
++        return [{
++          kind: 'system',
++          text: asString(raw['message']) ?? 'permission denied',
++          isError: true,
++          ...(name === undefined ? {} : { name }),
++          ...(callId === undefined ? {} : { callId }),
++        }]
++      }
++      return []
++    }
++    case 'assistant': {
++      const content = asRecord(raw['message'])?.['content']
++      if (!Array.isArray(content)) return []
++      const items: SubagentStreamItem[] = []
++      for (const candidate of content) {
++        const block = asRecord(candidate)
++        if (block === undefined) continue
++        switch (block['type']) {
++          case 'text':
++            items.push({ kind: 'assistant', text: asString(block['text']) ?? '' })
++            break
++          case 'thinking':
++            items.push({ kind: 'thought', text: asString(block['thinking']) ?? '' })
++            break
++          case 'tool_use':
++          case 'server_tool_use': {
++            const callId = asString(block['id'])
++            items.push({
++              kind: 'tool-call',
++              name: asString(block['name']) ?? 'tool',
++              text: stringifyInput(block['input']),
++              ...(callId === undefined ? {} : { callId }),
++            })
++            break
++          }
++          default:
++            break
++        }
++      }
++      return items
++    }
++    case 'user': {
++      const content = asRecord(raw['message'])?.['content']
++      if (!Array.isArray(content)) return []
++      const items: SubagentStreamItem[] = []
++      for (const candidate of content) {
++        const block = asRecord(candidate)
++        if (block?.['type'] !== 'tool_result') continue
++        const callId = asString(block['tool_use_id'])
++        items.push({
++          kind: 'tool-result',
++          text: contentToText(block['content']),
++          isError: block['is_error'] === true,
++          ...(callId === undefined ? {} : { callId }),
++        })
++      }
++      return items
++    }
++    case 'result': {
++      const subtype = asString(raw['subtype']) ?? 'unknown'
++      const errors = Array.isArray(raw['errors']) ? raw['errors'].map(String) : []
++      const text = subtype === 'success' ? asString(raw['result']) ?? '' : errors.join('\n')
++      return [{
++        kind: 'result',
++        text,
++        isError: raw['is_error'] === true || subtype !== 'success',
++        meta: {
++          subtype,
++          durationMs: typeof raw['duration_ms'] === 'number' ? raw['duration_ms'] : null,
++          numTurns: typeof raw['num_turns'] === 'number' ? raw['num_turns'] : null,
++          costUsd: typeof raw['total_cost_usd'] === 'number' ? raw['total_cost_usd'] : null,
++        },
++      }]
++    }
++    default:
++      return []
++  }
++}
++
+ export async function consumeClaudeQuery(
+   query: AsyncIterable<SDKMessage>,
+   onPermissionDenied?: () => void,
+   onResult?: () => void,
++  onMessage?: (message: SDKMessage) => void,
+ ): Promise<SubagentResult> {
+   let answer: string | undefined
+   for await (const message of query) {
++    onMessage?.(message)
+     if (message.type === 'system' && message.subtype === 'permission_denied') {
+       onPermissionDenied?.()
+       continue
+@@ -382,6 +537,14 @@ export async function startClaudeCodeRun(
+   if (request.signal.aborted) {
+     throw new Error('subagent-claude-code: request was aborted before SDK startup')
+   }
++  // Minted before the stream starts so every observed step names the same
++  // child id the published handle returns.
++  const childId = SessionId(randomUUID())
++  const observe = spec.onStream === undefined
++    ? undefined
++    : (message: SDKMessage): void => {
++      for (const item of mapClaudeMessage(message)) spec.onStream?.(item, childId)
++    }
+ 
+   const controller = new AbortController()
+   const requestCancel = (): void => {
+@@ -541,7 +704,7 @@ export async function startClaudeCodeRun(
+           ))
+         }, () => {
+           receivedResult = true
+-        })
++        }, observe)
+       } catch (error: unknown) {
+         const processOutcome = managedProcess?.outcome
+         let facts: ClaudeCodeFailureFacts
+@@ -576,7 +739,7 @@ export async function startClaudeCodeRun(
+   })
+ 
+   return subprocessRunHandle({
+-    id: SessionId(randomUUID()),
++    id: childId,
+     result,
+     signal: request.signal,
+     onAbort,
+diff --git a/packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts b/packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts
+index 3298e07..c8b5b71 100644
+--- a/packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts
++++ b/packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts
+@@ -563,6 +563,9 @@ describe('task admission and package contracts', () => {
+     expect(() => claudeCode.Config({ providerName: '' })).toThrow()
+     expect(claudeCode.Config({}).permissionMode)
+       .toBe(DEFAULT_CLAUDE_CODE_PERMISSION_MODE)
++    expect(claudeCode.Config({}).inheritSessionPermissions).toBe(false)
++    expect(claudeCode.Config({ inheritSessionPermissions: true }).inheritSessionPermissions)
++      .toBe(true)
+     for (const permissionMode of CLAUDE_CODE_PERMISSION_MODES) {
+       expect(claudeCode.Config({ permissionMode }).permissionMode)
+         .toBe(permissionMode)
+@@ -572,6 +575,51 @@ describe('task admission and package contracts', () => {
+     }
+   })
+ 
++  it('inherits DSH Full for one delegated provider run', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SubagentRuntime)
++    await ctx.plugin(LocalSubprocessRuntime)
++    const child = fakeChild()
++    vi.spyOn(ctx.subprocess, 'spawn').mockImplementation(() => child.handle)
++    queryMock.mockImplementation(({ options }) => {
++      options.spawnClaudeCodeProcess!(sdkSpawnOptions({
++        cwd: options.cwd!,
++        env: options.env!,
++        signal: options.abortController!.signal,
++      }))
++      return queryFrom([success('full answer')])
++    })
++    await ctx.plugin(claudeCode, {
++      inheritSessionPermissions: true,
++    })
++    const parent = {
++      id: 'full-parent',
++      session: {
++        header: { cwd: process.cwd() },
++        events: [
++          { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++          { type: 'approval/policy', data: { policy: 'never' } },
++        ],
++      },
++    } as unknown as Agent
++
++    const run = await ctx.subagents.start('claude-code', {
++      ...request(),
++      parent,
++    })
++    await expect(run.result).resolves.toEqual({
++      output: [{ type: 'text', text: 'full answer' }],
++      stopReason: 'completed',
++    })
++    expect(queryMock.mock.calls[0]?.[0].options).toMatchObject({
++      permissionMode: 'bypassPermissions',
++      allowDangerouslySkipPermissions: true,
++    })
++
++    await run.dispose()
++    await ctx.fiber.dispose()
++  })
++
+   it('resolves the safe permission default when apply is called directly', async () => {
+     const ctx = new Context()
+     await ctx.plugin(SubagentRuntime)
+diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagent/src/index.ts
+index 45b96a2..c190087 100644
+--- a/packages/subagent/subagent/src/index.ts
++++ b/packages/subagent/subagent/src/index.ts
+@@ -97,6 +97,20 @@ export type {
+   SubagentDescriptorInput,
+ } from './descriptor.ts'
+ export { seedDescriptorTurn } from './descriptor-seed.ts'
++export {
++  coalesceSubagentStream,
++  createSubagentStreamSink,
++  limitSubagentStreamText,
++  MAX_SUBAGENT_STREAM_META_BYTES,
++  MAX_SUBAGENT_STREAM_TEXT_BYTES,
++  SUBAGENT_STREAM_COALESCE_CHARS,
++} from './stream.ts'
++export type {
++  SubagentStreamData,
++  SubagentStreamItem,
++  SubagentStreamItemKind,
++  SubagentStreamSink,
++} from './stream.ts'
+ export { SubagentError } from './error.ts'
+ export { settleRun } from './run-settlement.ts'
+ export { assertSubagentMaxDepth, delegationDepthOf } from './depth.ts'
+diff --git a/packages/core/session/tests/append-ignorable.spec.ts b/packages/core/session/tests/append-ignorable.spec.ts
+new file mode 100644
+index 0000000..5747371
+--- /dev/null
++++ b/packages/core/session/tests/append-ignorable.spec.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from 'vitest'
++import { Session, SessionId } from '../src/index.ts'
++
++describe('Session.append ignorable option', () => {
++  it('stamps the envelope marker on a log-only event and keeps it off by default', () => {
++    const session = Session.create(SessionId('ignorable'))
++
++    const marked = session.append('plugin/stream' as never, { step: 1 } as never, { ignorable: true })
++    const plain = session.append('turn/start', { turn: 1 })
++
++    expect(marked.ignorable).toBe(true)
++    expect(marked.data).toEqual({ step: 1 })
++    expect(Object.hasOwn(plain, 'ignorable')).toBe(false)
++    expect(session.events.map(event => event.type)).toEqual(['plugin/stream', 'turn/start'])
++  })
++
++  it('refuses to mark a surface event ignorable', () => {
++    const session = Session.create(SessionId('ignorable-surface'))
++    session.append('turn/start', { turn: 1 })
++
++    expect(() => session.append(
++      'user/message',
++      { role: 'user', content: [{ type: 'text', text: 'hi' }], source: 'human' } as never,
++      { surfaceOp: { op: 'append' }, ignorable: true } as never,
++    )).toThrow(/cannot be both a surface event and ignorable/u)
++  })
++})
+diff --git a/packages/subagent/subagent/src/stream.ts b/packages/subagent/subagent/src/stream.ts
+new file mode 100644
+index 0000000..6e0033e
+--- /dev/null
++++ b/packages/subagent/subagent/src/stream.ts
+@@ -0,0 +1,214 @@
++/**
++ * The `subagent/stream` session event: one observed step of an out-of-process
++ * child, appended to the DELEGATING PARENT's log by the provider that owns the
++ * child's stream.
++ *
++ * Out-of-process one-shot children (Claude Code, ACP agents) have no session
++ * of their own in the parent's corpus; without this event the parent log keeps
++ * only the delegation call and its final answer. The event is log-only and
++ * `ignorable`: it never enters model history, `deriveMessages()` ignores it,
++ * and a harness that does not know the type skips it instead of refusing the
++ * log. Every text field is bounded, so a verbose child cannot inflate the
++ * parent log without limit.
++ * @module @deepseek-ai/dsh-subagent/stream
++ */
++
++import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
++
++declare module '@deepseek-ai/dsh-session/types' {
++  interface SessionEventMap {
++    /**
++     * One observed step of an out-of-process subagent child, appended to the
++     * delegating parent's log. Log-only and ignorable: presentation only.
++     */
++    'subagent/stream': SubagentStreamData
++  }
++}
++
++/** What kind of step the child took. */
++export type SubagentStreamItemKind =
++  | 'system'
++  | 'assistant'
++  | 'thought'
++  | 'tool-call'
++  | 'tool-result'
++  | 'result'
++  | 'plan'
++  | 'other'
++
++/** One step, in provider-neutral vocabulary. */
++export interface SubagentStreamItem {
++  readonly kind: SubagentStreamItemKind
++  /** The step's text: assistant prose, tool arguments, tool output, a diagnostic. */
++  readonly text?: string
++  /** Tool name for tool steps. */
++  readonly name?: string
++  /** Child-local call id pairing a tool call with its result. */
++  readonly callId?: string
++  readonly isError?: boolean
++  /** Small provider-specific facts (model, status, cost). Bounded by the sink. */
++  readonly meta?: JsonValue
++}
++
++/** The event data. */
++export interface SubagentStreamData {
++  /** The run's child id, the same value the provider returns as `SubagentRun.id`. */
++  readonly childId: SessionId
++  /** The provider registry name that owns the child. */
++  readonly provider: string
++  /** Zero-based position within this child's stream. */
++  readonly index: number
++  readonly item: SubagentStreamItem
++  /** Present when a text field was cut to {@link MAX_SUBAGENT_STREAM_TEXT_BYTES}. */
++  readonly truncated?: true
++}
++
++/** Receives one child step; the provider calls it from its stream loop. */
++export type SubagentStreamSink = (item: SubagentStreamItem) => void
++
++/** Upper bound of one item's `text` in UTF-8 bytes. */
++export const MAX_SUBAGENT_STREAM_TEXT_BYTES = 16_384
++/** Upper bound of one item's serialized `meta` in UTF-8 bytes; larger metadata is dropped. */
++export const MAX_SUBAGENT_STREAM_META_BYTES = 2_048
++const TRUNCATION_SUFFIX = '\n[stream text truncated]'
++
++const utf8Encoder = new TextEncoder()
++const utf8Decoder = new TextDecoder()
++
++/**
++ * Cut `text` to the byte bound on a UTF-8 character boundary.
++ * @param text - the candidate text.
++ * @returns the text that fits plus whether anything was cut.
++ */
++export function limitSubagentStreamText(text: string): { readonly text: string; readonly truncated: boolean } {
++  const bytes = utf8Encoder.encode(text)
++  if (bytes.byteLength <= MAX_SUBAGENT_STREAM_TEXT_BYTES) return { text, truncated: false }
++  let prefixBytes = MAX_SUBAGENT_STREAM_TEXT_BYTES - utf8Encoder.encode(TRUNCATION_SUFFIX).byteLength
++  while (((bytes[prefixBytes] as number) & 0b1100_0000) === 0b1000_0000) prefixBytes -= 1
++  return { text: utf8Decoder.decode(bytes.subarray(0, prefixBytes)) + TRUNCATION_SUFFIX, truncated: true }
++}
++
++/** The one method the sink needs from the parent session. */
++interface AppendableLog {
++  append(type: 'subagent/stream', data: SubagentStreamData, opts: { ignorable: true }): unknown
++}
++
++function isAppendable(log: unknown): log is AppendableLog {
++  return typeof log === 'object' && log !== null
++    && typeof (log as { append?: unknown }).append === 'function'
++}
++
++/**
++ * Build the sink that appends one child's steps to the parent log.
++ *
++ * A parent without an appendable session (a test stub, an unusual host) gets
++ * a no-op sink: the stream is a courtesy, never a precondition of the run.
++ * An append failure is reported once through `onError` and then silences the
++ * sink for the rest of the run, so a broken log cannot turn every child step
++ * into a thrown error inside the provider's stream loop.
++ * @param parentSession - the delegating parent's session (`request.parent.session`).
++ * @param childId - the run's child id.
++ * @param provider - the provider registry name.
++ * @param onError - receives the first append failure.
++ * @returns the sink.
++ */
++export function createSubagentStreamSink(
++  parentSession: unknown,
++  childId: SessionId,
++  provider: string,
++  onError?: (error: Error) => void,
++): SubagentStreamSink {
++  if (!isAppendable(parentSession)) return () => {}
++  let index = 0
++  let broken = false
++  return (item) => {
++    if (broken) return
++    const bounded = boundItem(item)
++    try {
++      parentSession.append('subagent/stream', {
++        childId,
++        provider,
++        index: index++,
++        item: bounded.item,
++        ...(bounded.truncated ? { truncated: true as const } : {}),
++      }, { ignorable: true })
++    } catch (error: unknown) {
++      broken = true
++      onError?.(error instanceof Error ? error : new Error(String(error)))
++    }
++  }
++}
++
++function boundItem(item: SubagentStreamItem): { readonly item: SubagentStreamItem; readonly truncated: boolean } {
++  let truncated = false
++  const out: { -readonly [K in keyof SubagentStreamItem]: SubagentStreamItem[K] } = { kind: item.kind }
++  if (item.text !== undefined) {
++    const limited = limitSubagentStreamText(item.text)
++    out.text = limited.text
++    truncated = limited.truncated
++  }
++  if (item.name !== undefined) out.name = item.name.slice(0, 256)
++  if (item.callId !== undefined) out.callId = item.callId.slice(0, 256)
++  if (item.isError !== undefined) out.isError = item.isError
++  if (item.meta !== undefined) {
++    let serialized: string | undefined
++    try {
++      serialized = JSON.stringify(item.meta)
++    } catch {
++      serialized = undefined
++    }
++    if (serialized !== undefined && utf8Encoder.encode(serialized).byteLength <= MAX_SUBAGENT_STREAM_META_BYTES) {
++      out.meta = item.meta
++    } else {
++      truncated = true
++    }
++  }
++  return { item: out, truncated }
++}
++
++/** Default flush threshold of {@link coalesceSubagentStream}. */
++export const SUBAGENT_STREAM_COALESCE_CHARS = 1_024
++
++/**
++ * Merge consecutive text fragments of the same kind into one item.
++ *
++ * Chunked protocols (ACP) deliver assistant and thought text a few characters
++ * at a time; one log event per fragment would flood the parent log. Fragments
++ * accumulate until the kind changes, a non-text item arrives, the buffer
++ * reaches `maxChars`, or `flush()` is called at the end of the run.
++ * @param sink - the downstream sink.
++ * @param maxChars - flush threshold in UTF-16 code units.
++ * @returns the coalescing front plus its explicit flush.
++ */
++export function coalesceSubagentStream(
++  sink: SubagentStreamSink,
++  maxChars = SUBAGENT_STREAM_COALESCE_CHARS,
++): { push: SubagentStreamSink; flush: () => void } {
++  let pendingKind: SubagentStreamItemKind | undefined
++  let pending: string[] = []
++  const flush = (): void => {
++    if (pendingKind === undefined) return
++    const kind = pendingKind
++    const text = pending.join('')
++    pendingKind = undefined
++    pending = []
++    sink({ kind, text })
++  }
++  return {
++    push: (item) => {
++      const fragment = (item.kind === 'assistant' || item.kind === 'thought')
++        && item.text !== undefined && item.name === undefined && item.callId === undefined
++        && item.meta === undefined && item.isError === undefined
++      if (!fragment) {
++        flush()
++        sink(item)
++        return
++      }
++      if (pendingKind !== undefined && pendingKind !== item.kind) flush()
++      pendingKind = item.kind
++      pending.push(item.text as string)
++      if (pending.reduce((total, part) => total + part.length, 0) >= maxChars) flush()
++    },
++    flush,
++  }
++}
+diff --git a/packages/subagent/subagent/tests/stream.spec.ts b/packages/subagent/subagent/tests/stream.spec.ts
+new file mode 100644
+index 0000000..6fa27b7
+--- /dev/null
++++ b/packages/subagent/subagent/tests/stream.spec.ts
+@@ -0,0 +1,112 @@
++import { describe, expect, it, vi } from 'vitest'
++import { SessionId } from '@deepseek-ai/dsh-session'
++import {
++  coalesceSubagentStream,
++  createSubagentStreamSink,
++  limitSubagentStreamText,
++  MAX_SUBAGENT_STREAM_META_BYTES,
++  MAX_SUBAGENT_STREAM_TEXT_BYTES,
++  type SubagentStreamData,
++  type SubagentStreamItem,
++} from '../src/stream.ts'
++
++const childId = SessionId('child-1')
++
++function recordingLog() {
++  const appended: Array<{ type: string; data: SubagentStreamData; opts: unknown }> = []
++  return {
++    appended,
++    session: {
++      append: (type: string, data: SubagentStreamData, opts: unknown) => {
++        appended.push({ type, data, opts })
++        return { type, data }
++      },
++    },
++  }
++}
++
++describe('createSubagentStreamSink', () => {
++  it('appends ignorable subagent/stream events with a per-child index', () => {
++    const log = recordingLog()
++    const sink = createSubagentStreamSink(log.session, childId, 'claude-code')
++
++    sink({ kind: 'assistant', text: 'hello' })
++    sink({ kind: 'tool-call', name: 'Bash', callId: 'c1', text: '{"command":"ls"}', meta: { status: 'pending' } })
++
++    expect(log.appended.map(entry => entry.type)).toEqual(['subagent/stream', 'subagent/stream'])
++    expect(log.appended.every(entry => JSON.stringify(entry.opts) === '{"ignorable":true}')).toBe(true)
++    expect(log.appended[0]?.data).toEqual({
++      childId, provider: 'claude-code', index: 0, item: { kind: 'assistant', text: 'hello' },
++    })
++    expect(log.appended[1]?.data).toEqual({
++      childId, provider: 'claude-code', index: 1,
++      item: { kind: 'tool-call', name: 'Bash', callId: 'c1', text: '{"command":"ls"}', meta: { status: 'pending' } },
++    })
++  })
++
++  it('is a no-op for a parent without an appendable session', () => {
++    expect(() => createSubagentStreamSink({ header: { cwd: '/w' } }, childId, 'acp')({ kind: 'assistant', text: 'x' })).not.toThrow()
++    expect(() => createSubagentStreamSink(undefined, childId, 'acp')({ kind: 'assistant', text: 'x' })).not.toThrow()
++  })
++
++  it('bounds text and metadata and marks the event truncated', () => {
++    const log = recordingLog()
++    const sink = createSubagentStreamSink(log.session, childId, 'acp')
++    const long = 'é'.repeat(MAX_SUBAGENT_STREAM_TEXT_BYTES)
++
++    sink({ kind: 'tool-result', text: long, meta: { blob: 'x'.repeat(MAX_SUBAGENT_STREAM_META_BYTES + 1) } })
++
++    const data = log.appended[0]?.data
++    expect(data?.truncated).toBe(true)
++    expect(data?.item.meta).toBeUndefined()
++    const text = data?.item.text ?? ''
++    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(MAX_SUBAGENT_STREAM_TEXT_BYTES)
++    expect(text.endsWith('[stream text truncated]')).toBe(true)
++    // The cut lands on a character boundary: the decoded prefix is whole `é`s.
++    expect(text.slice(0, text.indexOf('\n'))).toMatch(/^é+$/u)
++  })
++
++  it('reports the first append failure once and then stays silent', () => {
++    const onError = vi.fn()
++    const append = vi.fn(() => { throw new Error('closed') })
++    const sink = createSubagentStreamSink({ append }, childId, 'acp', onError)
++
++    sink({ kind: 'assistant', text: 'a' })
++    sink({ kind: 'assistant', text: 'b' })
++
++    expect(append).toHaveBeenCalledTimes(1)
++    expect(onError).toHaveBeenCalledTimes(1)
++    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error)
++  })
++})
++
++describe('limitSubagentStreamText', () => {
++  it('returns short text unchanged', () => {
++    expect(limitSubagentStreamText('short')).toEqual({ text: 'short', truncated: false })
++  })
++})
++
++describe('coalesceSubagentStream', () => {
++  it('merges text fragments of one kind and flushes on kind change, non-text items, size and flush()', () => {
++    const out: SubagentStreamItem[] = []
++    const stream = coalesceSubagentStream(item => { out.push(item) }, 6)
++
++    stream.push({ kind: 'assistant', text: 'He' })
++    stream.push({ kind: 'assistant', text: 'llo' })
++    stream.push({ kind: 'thought', text: 'hm' })
++    stream.push({ kind: 'tool-call', name: 't', callId: '1', text: '{}' })
++    stream.push({ kind: 'assistant', text: 'abc' })
++    stream.push({ kind: 'assistant', text: 'def' })
++    stream.push({ kind: 'assistant', text: 'tail' })
++    stream.flush()
++    stream.flush()
++
++    expect(out).toEqual([
++      { kind: 'assistant', text: 'Hello' },
++      { kind: 'thought', text: 'hm' },
++      { kind: 'tool-call', name: 't', callId: '1', text: '{}' },
++      { kind: 'assistant', text: 'abcdef' },
++      { kind: 'assistant', text: 'tail' },
++    ])
++  })
++})
+diff --git a/packages/subagent/subagent-claude-code/src/session-permissions.ts b/packages/subagent/subagent-claude-code/src/session-permissions.ts
+new file mode 100644
+index 0000000..b5e7cd9
+--- /dev/null
++++ b/packages/subagent/subagent-claude-code/src/session-permissions.ts
+@@ -0,0 +1,45 @@
++import type { ClaudeCodePermissionMode } from './run.ts'
++
++/**
++ * Resolve the native Claude Code mode for one delegated run.
++ *
++ * Only the explicit DSH Full pair can elevate a configured safe fallback.
++ * Partial, malformed, and less-permissive session state keeps the deployment
++ * fallback.
++ *
++ * @param fallback - Provider mode configured by the deployment.
++ * @param inheritSessionPermissions - Whether this provider accepts DSH Full.
++ * @param events - Parent session log in chronological order.
++ * @returns The native mode for this run.
++ */
++export function resolveClaudePermissionMode(
++  fallback: ClaudeCodePermissionMode,
++  inheritSessionPermissions: boolean,
++  events: readonly unknown[],
++): ClaudeCodePermissionMode {
++  if (!inheritSessionPermissions) return fallback
++
++  let sandbox: unknown
++  let approval: unknown
++  for (let index = events.length - 1; index >= 0; index -= 1) {
++    const event = events[index]
++    if (!isRecord(event)) continue
++    const data = event['data']
++    if (!isRecord(data)) continue
++    if (sandbox === undefined && event['type'] === 'sandbox/mode') {
++      sandbox = data['mode']
++    }
++    if (approval === undefined && event['type'] === 'approval/policy') {
++      approval = data['policy']
++    }
++    if (sandbox !== undefined && approval !== undefined) break
++  }
++
++  return sandbox === 'danger-full-access' && approval === 'never'
++    ? 'bypassPermissions'
++    : fallback
++}
++
++function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
++  return value !== null && typeof value === 'object' && !Array.isArray(value)
++}
+diff --git a/packages/subagent/subagent-claude-code/tests/session-permissions.spec.ts b/packages/subagent/subagent-claude-code/tests/session-permissions.spec.ts
+new file mode 100644
+index 0000000..3868e27
+--- /dev/null
++++ b/packages/subagent/subagent-claude-code/tests/session-permissions.spec.ts
+@@ -0,0 +1,50 @@
++import { describe, expect, it } from 'vitest'
++
++import { resolveClaudePermissionMode } from '../src/session-permissions.ts'
++
++function events(
++  ...items: ReadonlyArray<{ readonly type: string; readonly data: unknown }>
++): readonly unknown[] {
++  return items
++}
++
++describe('resolveClaudePermissionMode', () => {
++  it('keeps the configured safe fallback when inheritance is disabled', () => {
++    expect(resolveClaudePermissionMode('dontAsk', false, events(
++      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++      { type: 'approval/policy', data: { policy: 'never' } },
++    ))).toBe('dontAsk')
++  })
++
++  it('maps the explicit DSH Full pair to bypassPermissions', () => {
++    expect(resolveClaudePermissionMode('dontAsk', true, events(
++      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++      { type: 'approval/policy', data: { policy: 'never' } },
++    ))).toBe('bypassPermissions')
++  })
++
++  it('does not elevate partial or interactive permission state', () => {
++    expect(resolveClaudePermissionMode('dontAsk', true, events(
++      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++    ))).toBe('dontAsk')
++    expect(resolveClaudePermissionMode('dontAsk', true, events(
++      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++      { type: 'approval/policy', data: { policy: 'ask' } },
++    ))).toBe('dontAsk')
++  })
++
++  it('uses the latest durable permission values', () => {
++    expect(resolveClaudePermissionMode('dontAsk', true, events(
++      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
++      { type: 'approval/policy', data: { policy: 'never' } },
++      { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
++    ))).toBe('dontAsk')
++  })
++
++  it('ignores malformed unrelated events', () => {
++    expect(resolveClaudePermissionMode('acceptEdits', true, events(
++      { type: 'sandbox/mode', data: null },
++      { type: 'approval/policy', data: { policy: 'allow' } },
++    ))).toBe('acceptEdits')
++  })
++})
+diff --git a/packages/subagent/subagent-claude-code/tests/stream.spec.ts b/packages/subagent/subagent-claude-code/tests/stream.spec.ts
+new file mode 100644
+index 0000000..8d07910
+--- /dev/null
++++ b/packages/subagent/subagent-claude-code/tests/stream.spec.ts
+@@ -0,0 +1,93 @@
++import { describe, expect, it, vi } from 'vitest'
++import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
++import { consumeClaudeQuery, mapClaudeMessage } from '../src/run.ts'
++
++const message = (value: unknown): SDKMessage => value as SDKMessage
++
++async function* stream(messages: readonly SDKMessage[]): AsyncGenerator<SDKMessage, void> {
++  for (const item of messages) yield item
++}
++
++describe('mapClaudeMessage', () => {
++  it('maps init, assistant blocks, tool results and the result', () => {
++    expect(mapClaudeMessage(message({
++      type: 'system', subtype: 'init', claude_code_version: '2.1.220', model: 'claude-x', cwd: '/w', tools: ['Bash', 'Read'],
++    }))).toEqual([{
++      kind: 'system',
++      text: 'claude-code 2.1.220 · claude-x · cwd /w · 2 tools',
++      meta: { model: 'claude-x', claudeCodeVersion: '2.1.220' },
++    }])
++
++    expect(mapClaudeMessage(message({
++      type: 'assistant',
++      message: {
++        content: [
++          { type: 'thinking', thinking: 'plan' },
++          { type: 'text', text: 'Running ls.' },
++          { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'ls' } },
++          { type: 'redacted_thinking', data: 'x' },
++        ],
++      },
++    }))).toEqual([
++      { kind: 'thought', text: 'plan' },
++      { kind: 'assistant', text: 'Running ls.' },
++      { kind: 'tool-call', name: 'Bash', callId: 'tu1', text: '{\n  "command": "ls"\n}' },
++    ])
++
++    expect(mapClaudeMessage(message({
++      type: 'user',
++      message: {
++        content: [
++          { type: 'tool_result', tool_use_id: 'tu1', content: [{ type: 'text', text: 'a.txt' }, { type: 'image' }] },
++          { type: 'tool_result', tool_use_id: 'tu2', content: 'boom', is_error: true },
++          { type: 'text', text: 'ignored prompt echo' },
++        ],
++      },
++    }))).toEqual([
++      { kind: 'tool-result', callId: 'tu1', text: 'a.txt\n[image]', isError: false },
++      { kind: 'tool-result', callId: 'tu2', text: 'boom', isError: true },
++    ])
++
++    expect(mapClaudeMessage(message({
++      type: 'result', subtype: 'success', is_error: false, result: 'DONE', duration_ms: 12, num_turns: 1, total_cost_usd: 0.01,
++    }))).toEqual([{
++      kind: 'result', text: 'DONE', isError: false,
++      meta: { subtype: 'success', durationMs: 12, numTurns: 1, costUsd: 0.01 },
++    }])
++
++    expect(mapClaudeMessage(message({
++      type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['too many'], duration_ms: 5, num_turns: 9,
++    }))).toEqual([{
++      kind: 'result', text: 'too many', isError: true,
++      meta: { subtype: 'error_max_turns', durationMs: 5, numTurns: 9, costUsd: null },
++    }])
++  })
++
++  it('maps a permission denial and drops noise messages', () => {
++    expect(mapClaudeMessage(message({
++      type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'tu9', message: 'denied',
++    }))).toEqual([{ kind: 'system', text: 'denied', isError: true, name: 'Bash', callId: 'tu9' }])
++    expect(mapClaudeMessage(message({ type: 'system', subtype: 'status', status: 'compacting' }))).toEqual([])
++    expect(mapClaudeMessage(message({ type: 'stream_event', event: {} }))).toEqual([])
++    expect(mapClaudeMessage(message({ type: 'assistant', message: { content: 'not-an-array' } }))).toEqual([])
++    expect(mapClaudeMessage(message({ type: 'user', message: { content: 'plain' } }))).toEqual([])
++  })
++})
++
++describe('consumeClaudeQuery observation', () => {
++  it('hands every message to the observer before interpreting it', async () => {
++    const seen: string[] = []
++    const messages = [
++      message({ type: 'system', subtype: 'init', model: 'm', cwd: '/w', tools: [], claude_code_version: '1' }),
++      message({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
++      message({ type: 'result', subtype: 'success', is_error: false, result: 'ok' }),
++    ]
++    const onResult = vi.fn()
++
++    const result = await consumeClaudeQuery(stream(messages), undefined, onResult, (item) => { seen.push(item.type) })
++
++    expect(seen).toEqual(['system', 'assistant', 'result'])
++    expect(onResult).toHaveBeenCalledTimes(1)
++    expect(result).toEqual({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' })
++  })
++})
+diff --git a/packages/subagent/subagent-acp/tests/stream.spec.ts b/packages/subagent/subagent-acp/tests/stream.spec.ts
+new file mode 100644
+index 0000000..ed380a6
+--- /dev/null
++++ b/packages/subagent/subagent-acp/tests/stream.spec.ts
+@@ -0,0 +1,69 @@
++import { describe, expect, it } from 'vitest'
++import { fileURLToPath } from 'node:url'
++import type { Agent } from '@deepseek-ai/dsh-agent'
++import type { SubagentStreamItem } from '@deepseek-ai/dsh-subagent'
++import { spawnSubprocess } from '@deepseek-ai/dsh-subprocess-local/src/spawn.ts'
++import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, mapAcpUpdate, startAcpRun, type AcpRunSpec } from '../src/run.ts'
++
++const update = (value: unknown): Parameters<typeof mapAcpUpdate>[0] => value as Parameters<typeof mapAcpUpdate>[0]
++const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
++
++describe('mapAcpUpdate', () => {
++  it('maps chunks, tool calls, settled updates and plans', () => {
++    expect(mapAcpUpdate(update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hi' } })))
++      .toEqual({ kind: 'assistant', text: 'Hi' })
++    expect(mapAcpUpdate(update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hm' } })))
++      .toEqual({ kind: 'thought', text: 'hm' })
++    expect(mapAcpUpdate(update({ sessionUpdate: 'user_message_chunk', content: { type: 'image', data: '' } })))
++      .toEqual({ kind: 'other', text: '' })
++    expect(mapAcpUpdate(update({
++      sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read file', kind: 'read', status: 'in_progress', rawInput: { path: 'a' },
++    }))).toEqual({
++      kind: 'tool-call', name: 'Read file', callId: 't1', text: '{\n  "path": "a"\n}', meta: { status: 'in_progress', toolKind: 'read' },
++    })
++    expect(mapAcpUpdate(update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'in_progress' }))).toBeUndefined()
++    expect(mapAcpUpdate(update({
++      sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', title: 'Read file',
++      content: [
++        { type: 'content', content: { type: 'text', text: 'line 1' } },
++        { type: 'diff', path: 'a', oldText: 'x', newText: 'y' },
++        { type: 'terminal', terminalId: 'term-1' },
++      ],
++    }))).toEqual({
++      kind: 'tool-result', callId: 't1', text: 'line 1\n--- a\nx\n+++ a\ny\n[terminal term-1]', isError: false, name: 'Read file', meta: { status: 'completed' },
++    })
++    expect(mapAcpUpdate(update({ sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'failed', rawOutput: { code: 1 } })))
++      .toEqual({ kind: 'tool-result', callId: 't2', text: '{\n  "code": 1\n}', isError: true, meta: { status: 'failed' } })
++    expect(mapAcpUpdate(update({
++      sessionUpdate: 'plan', entries: [{ content: 'read', status: 'completed', priority: 'high' }, { content: 'write', status: 'pending', priority: 'low' }],
++    }))).toEqual({ kind: 'plan', text: '- [completed] read\n- [pending] write' })
++    expect(mapAcpUpdate(update({ sessionUpdate: 'usage_update' }))).toBeUndefined()
++    expect(mapAcpUpdate(update({ sessionUpdate: 'current_mode_update', currentModeId: 'x' }))).toBeUndefined()
++  })
++})
++
++describe('startAcpRun stream', () => {
++  it('delivers the child text to the stream sink with the run id, merged into one step', async () => {
++    const seen: Array<{ item: SubagentStreamItem; childId: string }> = []
++    const parent = { id: 'parent', session: { header: { cwd: process.cwd() } } } as unknown as Agent
++    const spec: AcpRunSpec = {
++      command: process.execPath,
++      args: [mockServer],
++      cwd: process.cwd(),
++      permission: 'reject',
++      env: { MOCK_TEXT: 'streamed answer' },
++      disposeEofGraceMs: DEFAULT_DISPOSE_EOF_GRACE_MS,
++      disposeGraceMs: DEFAULT_DISPOSE_GRACE_MS,
++      spawn: spawnSpec => spawnSubprocess(spawnSpec),
++      onStream: (item, childId) => { seen.push({ item, childId: String(childId) }) },
++    }
++
++    const run = await startAcpRun({ prompt: [{ type: 'text', text: 'p' }], parent, signal: new AbortController().signal }, spec)
++    const result = await run.result
++    await run.dispose()
++
++    expect(result.stopReason).toBe('completed')
++    expect(seen.map(entry => entry.item)).toEqual([{ kind: 'assistant', text: 'streamed answer' }])
++    expect(seen.every(entry => entry.childId === String(run.id))).toBe(true)
++  })
++})

@@ -9,6 +9,53 @@
  */
 
 import type { SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ExternalProcess } from './stream-definition.ts'
+
+/** A row for an out-of-process delegation folded from the parent's log. */
+export interface ExternalEntry {
+  readonly kind: 'external'
+  readonly id: string
+  readonly parentId: SessionId
+  readonly depth: number
+  readonly label: string
+  readonly running: boolean
+  readonly provider: string
+  readonly process: ExternalProcess
+}
+
+/** Any row of the process tree. */
+export type ProcessRow = (ProcessEntry & { readonly kind: 'session' }) | ExternalEntry
+
+/**
+ * Place each parent's external delegations directly under that parent's row.
+ * @param entries - session rows from {@link buildProcessTree}.
+ * @param externalsByParent - folded delegations keyed by the session whose log holds them.
+ * @param label - renders one row label.
+ * @returns the mixed rows, sessions first within each parent.
+ */
+export function withExternals(
+  entries: readonly ProcessEntry[],
+  externalsByParent: ReadonlyMap<SessionId, ReadonlyMap<string, ExternalProcess>>,
+  label: (process: ExternalProcess) => string,
+): ProcessRow[] {
+  const rows: ProcessRow[] = []
+  for (const entry of entries) {
+    rows.push({ ...entry, kind: 'session' })
+    for (const process of externalsByParent.get(entry.id)?.values() ?? []) {
+      rows.push({
+        kind: 'external',
+        id: process.childId,
+        parentId: entry.id,
+        depth: entry.depth + 1,
+        label: label(process),
+        running: !process.done,
+        provider: process.provider,
+        process,
+      })
+    }
+  }
+  return rows
+}
 
 /** One row of the process tree. */
 export interface ProcessEntry {

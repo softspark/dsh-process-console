@@ -50,9 +50,11 @@ dsh plugin --profile web add "$(pwd)"
 
 Tool calls include MCP tools, since the harness records them as ordinary tool events.
 
-## What you do not see yet
+## External delegations
 
-One-shot external delegations (`subagent_claude_code`, `subagent_gemini_copilot`) return only their final answer to the parent log, so they appear as a `CALL` and a `RESULT` in the parent console rather than as a process of their own. Exposing their child stream is a harness-side change, tracked in the [implementation plan](kb/planning/dsh-process-console-implementation-plan.md).
+One-shot external delegations (`subagent_claude_code`, `subagent_gemini_copilot`) have no session of their own, so a stock harness records only their final answer: they appear as a `CALL` and a `RESULT` in the parent console.
+
+With the harness-side change described in [`kb/reference/subagent-stream.md`](kb/reference/subagent-stream.md), the provider appends the child's steps to the parent log as ignorable `subagent/stream` events, and this tab folds them into a nested row per child with its own live console. The change is four small patches on published `0.1.1-rc.2` packages (`dsh-session`, `dsh-subagent`, `dsh-subagent-claude-code`, `dsh-subagent-acp`) and is being prepared as an upstream pull request. Without it the tab behaves exactly as before.
 
 ## Documentation
 

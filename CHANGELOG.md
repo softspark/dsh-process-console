@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- External delegations as processes. When the harness records `subagent/stream` events (a patched `dsh-subagent-claude-code` or `dsh-subagent-acp` provider appending the child's steps to the parent log), each one-shot Claude Code or ACP child appears as a nested row under its parent with its own live console: the child's text and reasoning, every tool call with arguments, every tool result with elapsed time, and the final result. The fold registers a conversation Definition and the `process-console` view target; an unpatched harness contributes nothing and the tab behaves as in 0.1.0.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added

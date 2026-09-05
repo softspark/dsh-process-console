@@ -63,12 +63,22 @@ inline as ordinary tool lines.
 | Large responses freeze the list | Jank on long sessions | Lines are collapsed by default above a size threshold; expansion is per line. |
 | Harness renames `conversation.view` | Tab silently missing | `validate-config` and a mount test pin the slot name; the failure is visible in CI before it is visible to a user. |
 
-## Phase 2 (separate release)
+## Phase 2: external delegations (done 2026-09-05, unreleased)
 
-- Upstream change in `dsh-subagent-claude-code` and `dsh-subagent-acp` to forward
-  the child stream into a log-only session event, so external delegations get a
-  real pane.
-- A per-process "Open in Chat" action using `ctx.sessions.openSubagent`.
+Implemented as the `subagent/stream` event: four small changes on the published
+`0.1.1-rc.2` harness packages (see [the reference](../reference/subagent-stream.md))
+plus a conversation Definition and view target in this package. Verified live in
+dsh-drydock: a Claude Code delegation appears as a nested `delegation` row with
+its own console showing the child's init, tool calls and results (including MCP
+responses), text, reasoning and final result.
+
+Open items:
+
+- Upstream pull request for the four harness changes. Until it lands, the patch
+  set in `patches/dsh-0.1.1-rc.2/` must be re-applied after every drydock image
+  rebuild.
+- A per-process "Open in Chat" action using `ctx.sessions.openSubagent` for
+  session-backed children.
 
 ## Related
 
