@@ -24,6 +24,7 @@ const required = [
   '.github/workflows/ci.yml', '.github/workflows/publish.yml',
   'kb/procedures/sop-release.md',
   'kb/procedures/sop-pre-commit.md',
+  'kb/procedures/sop-post-release-testing.md',
   'kb/reference/architecture.md',
   'kb/reference/security.md',
   'kb/howto/setup.md',

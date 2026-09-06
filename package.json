@@ -1,6 +1,6 @@
 {
   "name": "@softspark/dsh-process-console",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Processes tab for DeepSeek Harness: a live per-process console (main agent and every subagent) with raw tool requests, responses and timing, installed as one profile bundle.",
   "keywords": [
     "deepseek-harness",

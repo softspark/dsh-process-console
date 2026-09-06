@@ -1,11 +1,23 @@
-# @softspark/dsh-process-console
+# dsh-process-console
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+> A **Processes** tab for the DeepSeek Harness web UI: every agent and subagent of a conversation as a live console, with the exact request and response of each step.
+
+[![npm](https://img.shields.io/npm/v/@softspark/dsh-process-console.svg)](https://www.npmjs.com/package/@softspark/dsh-process-console)
 [![CI](https://github.com/softspark/dsh-process-console/actions/workflows/ci.yml/badge.svg)](https://github.com/softspark/dsh-process-console/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![DSH community plugin](https://img.shields.io/badge/DSH-community%20plugin-4b8bbe.svg)](https://github.com/topics/dsh-plugin)
 
-A **Processes** tab next to Chat and Trajectory in the DeepSeek Harness web UI. It lists every process of the current conversation, the main agent and each subagent under it, and prints the selected one as a live console: what the agent wrote, every tool request with its raw arguments, every tool response with its full content, the model behind each step, timing, errors and pending approvals.
+The tab sits next to Chat and Trajectory. It lists every process of the current conversation, the main agent and each subagent under it, and prints the selected one as a live console: what the agent wrote, every tool request with its raw arguments, every tool response with its full content, the model behind each step, timing, errors and pending approvals.
 
-Works on the **published harness**. No patch, no fork, no modified checkout.
+Works on the **published harness**. No patch, no fork, no modified checkout. This is an independently maintained SoftSpark community integration. It is unofficial and is not affiliated with or endorsed by DeepSeek.
+
+## What's New in v1.0.0
+
+- Processes tab with a process tree and a live per-process console, paired tool requests and responses with elapsed time.
+- External delegations (Claude Code, ACP agents) as nested rows with their own console when the harness records `subagent/stream` events.
+- The harness-side change shipped as a reviewed patch set in `patches/dsh-0.1.1-rc.2/`, pending upstream.
+
+Full history in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contents
 
@@ -13,8 +25,11 @@ Works on the **published harness**. No patch, no fork, no modified checkout.
 - [Requirements](#requirements)
 - [Install](#install)
 - [What you see](#what-you-see)
-- [What you do not see yet](#what-you-do-not-see-yet)
+- [External delegations](#external-delegations)
 - [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License](#license)
 
 ## Why
 
@@ -70,6 +85,14 @@ With the harness-side change described in [`kb/reference/subagent-stream.md`](kb
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md). `pnpm run verify` is the gate.
 
+## Security
+
+The tab is read-only and adds no host surface; the model is in [SECURITY.md](SECURITY.md) and [`kb/reference/security.md`](kb/reference/security.md).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+---
+
+Built by [SoftSpark](https://softspark.eu) for people who want to see what their agents actually do.

@@ -4,11 +4,11 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 1.0.x | Yes |
 
 ## Reporting a vulnerability
 
-Email **biuro@softspark.eu** with the subject `dsh-process-console security`. Do not open a public issue for a suspected vulnerability. You will receive an acknowledgement within three working days and a resolution plan within fourteen.
+Email **biuro@softspark.eu** with the subject `dsh-process-console security`. Do not open a public issue for a suspected vulnerability. You will receive an acknowledgement within 48 hours and a resolution plan within fourteen days.
 
 ## Scope
 
