@@ -1,0 +1,32 @@
+# SoftSpark dsh-process-console
+
+> Browser-only DeepSeek Harness bundle adding a Processes tab: every agent and subagent of a conversation as a live console with paired tool requests and responses.
+
+## Primary files
+
+- README.md: what the tab shows, install, update, external delegations.
+- cordis.patch.yml: the single inserted loader row naming the package root.
+- src/client/index.tsx: registers the tab in the `conversation.view` slot and the `subagent/stream` fold.
+- src/client/console-lines.ts: pure fold from a conversation snapshot to console lines.
+- src/client/process-source.ts: the one reactive fact, which child window is selected.
+- kb/reference/architecture.md: slot, data path, why the package is standalone.
+- kb/reference/security.md: read-only surface, no host half.
+- kb/reference/subagent-stream.md: the harness-side change behind delegation rows.
+- kb/reference/upstream-proposal.md: the text proposed to the harness maintainers.
+- kb/decisions/: architecture decision records.
+- kb/procedures/: pre-commit, release, and post-release SOPs.
+- patches/dsh-0.1.1-rc.2/: source patch and per-package lib patches for the harness change.
+
+## Hard constraints
+
+- DSH compatibility pinned to 0.1.1-rc.2; every @deepseek-ai peer exact.
+- The browser bundle externalizes only react; harness imports are type-only.
+- Read-only: no prompt, cancel, rename, command or queue writes.
+- No host service, no Remote, no lifecycle scripts.
+- Public object layer only: ConversationSnapshot, SessionListState, framework hooks.
+- Delegation rows need the subagent/stream patch set on the harness; without it the tab shows delegations as CALL/RESULT in the parent.
+
+## Verified evidence
+
+- 1.0.0 published to npm with SLSA v1 provenance on 2026-09-06; 30 tests; 92 percent statements, 81 percent branches.
+- Live in dsh-drydock 1.27.0: three tabs, a nested Claude Code delegation row with its own console including an MCP response.

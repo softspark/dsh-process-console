@@ -24,12 +24,14 @@ Full history in [CHANGELOG.md](CHANGELOG.md).
 - [Why](#why)
 - [Requirements](#requirements)
 - [Install](#install)
+- [Update](#update)
 - [What you see](#what-you-see)
 - [External delegations](#external-delegations)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [Security](#security)
 - [License](#license)
+- [Changelog](#changelog)
 
 ## Why
 
@@ -53,6 +55,16 @@ Restart DSH. The package registers its row itself. For a local checkout:
 pnpm install --ignore-scripts && pnpm run build
 dsh plugin --profile web add "$(pwd)"
 ```
+
+## Update
+
+Pins are exact on purpose. Move to a newer release by adding it again, then restart DSH:
+
+```bash
+dsh plugin --profile web add @softspark/dsh-process-console@<version> --save-exact
+```
+
+`dsh plugin --profile web remove @softspark/dsh-process-console` removes the tab and nothing else.
 
 ## What you see
 
@@ -92,6 +104,10 @@ The tab is read-only and adds no host surface; the model is in [SECURITY.md](SEC
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Changelog
+
+Every release is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

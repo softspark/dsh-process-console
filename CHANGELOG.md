@@ -4,6 +4,16 @@ All notable changes to `@softspark/dsh-process-console` are documented here. The
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The browser bundle no longer embeds the build machine's absolute repository path in its CSS-module region labels.
+
+### Added
+
+- `AGENTS.md`, `llms.txt`, ADR-001 (standalone browser bundle) and ADR-002 (the `subagent/stream` event), an Update section in the README, and `@vitest/coverage-v8` so `pnpm run test:coverage` runs.
+
 ## [1.0.0] - 2026-09-06
 
 ### Added

@@ -120,7 +120,15 @@ if (chunk === undefined) throw new Error('build-client: rolldown produced no chu
 // repeats it, and two identical defineProperty calls on a non-configurable
 // property is a throw waiting to happen.
 const MODULE_MARKER = 'Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });'
-const body = chunk.code.split('\n').filter((line) => line.trim() !== MODULE_MARKER).join('\n')
+// Rolldown labels each CSS-module region with the absolute path it resolved,
+// which would put the build machine's directory layout into a published
+// artifact. Relative to the repository root is all a reader needs.
+const body = chunk.code
+  .split('\n')
+  .filter((line) => line.trim() !== MODULE_MARKER)
+  .join('\n')
+  .split(root)
+  .join('.')
 
 // The envelope, byte-compatible with what the harness's own bundles emit.
 const artifact = `window.__ModuleLoader__.load({
