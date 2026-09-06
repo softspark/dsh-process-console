@@ -1,8 +1,16 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { apply, inject } from '../src/client/index.tsx'
 import type { ProcessConsoleInjected } from '../src/client/index.tsx'
+
+// Public client entries are DSH-loader registrations rather than Node ESM.
+// Ordinary-binding tests never instantiate a separate journal reader.
+vi.mock('@deepseek-ai/dsh-api-session-controller/client', () => ({
+  SessionEventStream: vi.fn(), MutableSessionEventSource: vi.fn(),
+}))
+vi.mock('@deepseek-ai/dsh-client-ui-conversation/client', () => ({ ConversationNodeAssembler: vi.fn() }))
 
 const id = (value: string): SessionId => value as SessionId
 
@@ -20,18 +28,30 @@ function fakeContext() {
   const bindings = new Map<SessionId, { session: unknown }>()
   const definitions: Array<{ kind?: string; target: string }> = []
   const ctx = {
-    conversationEvents: {
+    uiConversation: {
+      events: {
       register: vi.fn((definition: { kind: string; target?: string }) => {
         definitions.push({ kind: definition.kind, target: definition.target ?? '' })
         return () => {}
       }),
     },
-    conversationViews: {
+      views: {
       register: vi.fn((definition: { target: string }) => {
         definitions.push({ target: definition.target })
         return () => {}
       }),
     },
+      binding: () => ({
+        activate: vi.fn(),
+        snapshot: { getSnapshot: () => ({ views: { get: () => undefined }, activeTargets: new Set() }), subscribe: () => () => {} },
+        target: () => ({ getSnapshot: () => ({ eventNodes: [], partial: null, runningCalls: [] }), subscribe: () => () => {} }),
+      }),
+    },
+    uiSession: { pendingInteractions: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
+    sessions: { list: { getSnapshot: () => ({ ids: [], byId: {}, subagentsByParent: {} }) }, binding: (sessionId: SessionId) => {
+      const binding = bindings.get(sessionId)
+      return binding === undefined ? undefined : { ...binding, eventSource: { getSnapshot: () => ({ revision: 0 }), subscribe: () => () => {} } }
+    } },
     effect: (run: () => unknown, _label: string) => {
       effects.push(run as () => void)
       const dispose = run()
@@ -52,12 +72,12 @@ function fakeContext() {
       }),
     },
   }
-  return { ctx: ctx as unknown as ClientContext, registrations, disposers, dictionaries, bindings, definitions }
+  return { ctx: ctx as unknown as Context, registrations, disposers, dictionaries, bindings, definitions }
 }
 
 describe('apply', () => {
   it('declares its services, registers the stream fold and one tab in the conversation view ring', () => {
-    expect(inject).toEqual(['slots', 'locale', 'sessions', 'conversationEvents', 'conversationViews'])
+    expect(inject).toEqual(['slots', 'locale', 'sessions', 'uiConversation', 'uiSession', 'remote', 'remote.session'])
     const { ctx, registrations, dictionaries, definitions } = fakeContext()
 
     apply(ctx)
@@ -92,10 +112,12 @@ describe('apply', () => {
     first.select(id('ghost'))
     expect(first.hooks.process.getSnapshot().status).toBe('unavailable')
 
-    // The same conversation on a later mount reuses the source and re-selects the root.
+    bindings.set(id('child'), { session: face })
+    first.select(id('child'))
+    // A tab switch preserves the selected child and the existing source.
     const second = factory(id('root'))
     expect(second.hooks.process).toBe(first.hooks.process)
-    expect(second.hooks.process.getSnapshot()).toMatchObject({ selected: 'root', status: 'live' })
+    expect(second.hooks.process.getSnapshot()).toMatchObject({ selected: 'child', status: 'live' })
 
     // Plugin unload disposes every source.
     for (const dispose of disposers) dispose()

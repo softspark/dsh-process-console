@@ -2,8 +2,9 @@
 title: "dsh-process-console Common Issues"
 category: troubleshooting
 service: dsh-process-console
+version: "2.0.0"
 tags: [troubleshooting, dsh, plugin, slot, subagent]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "Why the Processes tab is missing, why a pane stays empty, and why a delegation has no row of its own."
 ---

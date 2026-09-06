@@ -19,14 +19,14 @@
 
 ## Hard constraints
 
-- DSH compatibility pinned to 0.1.1-rc.2; every @deepseek-ai peer exact.
-- The browser bundle externalizes only react; harness imports are type-only.
+- Version 2 targets DSH 0.1.2-rc.1; every @deepseek-ai peer exact. Version 1.0.0 remains the historical 0.1.1-rc.2 artifact.
+- The browser loader permits React plus the public Session Controller and Conversation constructor entries (ADR-003); other harness imports are type-only.
 - Read-only: no prompt, cancel, rename, command or queue writes.
 - No host service, no Remote, no lifecycle scripts.
-- Public object layer only: ConversationSnapshot, SessionListState, framework hooks.
+- Public object layer only: Session Controller, Conversation and Trajectory targets, pending interactions, framework hooks.
 - Delegation rows need the subagent/stream patch set on the harness; without it the tab shows delegations as CALL/RESULT in the parent.
 
 ## Verified evidence
 
-- 1.0.0 published to npm with SLSA v1 provenance on 2026-09-06; 30 tests; 92 percent statements, 81 percent branches.
+- 1.0.0 registry installation and SLSA v1 provenance were checked on 2026-09-06. Its live browser checks were source-workbench checks, not complete registry-artifact verification.
 - Live in dsh-drydock 1.27.0: three tabs, a nested Claude Code delegation row with its own console including an MCP response.

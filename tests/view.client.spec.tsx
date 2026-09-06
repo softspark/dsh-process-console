@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ConversationNode, ConversationSnapshot, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConversationNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ProcessConversationSnapshot as ConversationSnapshot, ProcessBinding } from '../src/client/process-source.ts'
 import { en } from '../src/client/locales.ts'
 import { createProcessSource, type ProcessSnapshot } from '../src/client/process-source.ts'
 import type { ExternalProcess } from '../src/client/stream-definition.ts'
@@ -60,21 +63,27 @@ function renderView(options: { hasMore?: boolean; childState?: ConversationSnaps
   const source = createProcessSource(sessionId => {
     const snapshot = snapshots.get(sessionId)
     if (snapshot === undefined) return undefined
-    return {
+    const session = {
       getSnapshot: () => snapshot,
       subscribe: () => () => {},
       loadOlder: vi.fn(async () => {}),
       // The concrete Session's undeclared opener; a fake that never settles the window keeps it cold.
       open: async () => {},
-    } as unknown as ReturnType<Parameters<typeof createProcessSource>[0]>
-  })
+    }
+    return {
+      session,
+      events: { getSnapshot: () => ({ revision: 0 }), subscribe: () => () => {} },
+      conversation: { getSnapshot: () => snapshot, subscribe: () => () => {} },
+      trajectory: { getSnapshot: () => ({ eventNodes: snapshot.nodes, partial: snapshot.partial, runningCalls: snapshot.runningCalls }), subscribe: () => () => {} },
+    } as unknown as ProcessBinding
+  }, { getSnapshot: () => new Map(), subscribe: () => () => {} })
   source.select(id('root'))
   const listState = list()
   const select = vi.fn((sessionId: SessionId) => { source.select(sessionId) })
   const loadOlder = vi.fn(async () => true)
   const props = {
     sessionId: id('root'),
-    useSession: <R,>(pick: (state: ConversationSnapshot) => R) => pick(rootSnapshot),
+    useConversation: <R,>(pick: (state: ConversationSnapshot) => R) => pick(rootSnapshot),
     useSessions: <R,>(pick: (state: SessionListState) => R) => pick(listState),
     useProcess: <R,>(pick: (state: ProcessSnapshot) => R) => pick(source.getSnapshot()),
     select,

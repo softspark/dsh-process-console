@@ -10,7 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ignoredDirectories = new Set([
   '.agents', '.claude', '.codex', '.git', '.idea', 'coverage', 'lib', 'node_modules',
 ]);
-const scannedExtensions = new Set(['.js', '.json', '.mjs', '.ts', '.yml', '.yaml']);
+const scannedExtensions = new Set(['.js', '.jsx', '.json', '.mjs', '.ts', '.tsx', '.yml', '.yaml']);
 const placeholderPrefixes = [
   'REPLACE_', 'CHANGEME_', 'CHANGE_ME', 'YOUR_', 'EXAMPLE_', 'PLACEHOLDER_',
   '${', '{{', '<', 'xxx', 'XXX', '[REDACTED]',

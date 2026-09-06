@@ -2,8 +2,9 @@
 title: "The subagent/stream event"
 category: reference
 service: dsh-process-console
+version: "2.0.0"
 tags: [dsh, subagent, session-log, event, claude-code, acp, patch]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "The harness-side change that gives one-shot external delegations a live per-process stream: vocabulary, bounds, durability guard, and how it is deployed."
 ---

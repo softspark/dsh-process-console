@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import { buildProcessTree } from '../src/client/process-tree.ts'
 
 const id = (value: string): SessionId => value as SessionId
@@ -22,7 +23,7 @@ describe('buildProcessTree', () => {
       ids: [id('other'), id('root'), id('b'), id('a'), id('a1')],
       byId: {
         [id('other')]: summary({ id: id('other') }),
-        [id('root')]: summary({ id: id('root'), displayTitle: 'Root', running: true, agentPreset: 'std' }),
+        [id('root')]: summary({ id: id('root'), displayTitle: 'Root', running: true, projectionValues: { agentPreset: 'std' } as NonNullable<Summary['projectionValues']> }),
         [id('a')]: summary({ id: id('a'), parentId: id('root'), origin: 'subagent', displayTitle: 'A' }),
         [id('b')]: summary({ id: id('b'), parentId: id('root'), origin: 'subagent', displayTitle: 'B', running: true }),
         [id('a1')]: summary({ id: id('a1'), parentId: id('a'), origin: 'subagent', displayTitle: 'A1' }),
@@ -56,6 +57,24 @@ describe('buildProcessTree', () => {
       { id: 'missing', parentId: null, depth: 0, label: 'missing', running: false, agentPreset: undefined, subagent: false },
     ])
     expect(buildProcessTree(list, id('x')).map(entry => entry.id)).toEqual(['x', 'y'])
+  })
+
+  it('includes catalog-only and unreadable children without duplicating listed descendants', () => {
+    const list = {
+      ids: [id('root'), id('child')],
+      byId: { [id('child')]: summary({ id: id('child'), parentId: id('root') }) },
+      subagentsByParent: {
+        [id('root')]: { entries: [
+          { kind: 'child', id: id('child'), mode: 'one-shot', activity: 'running', hasChildren: false },
+          { kind: 'child', id: id('catalog'), mode: 'continuable', label: 'Catalog child', activity: 'inactive', hasChildren: false },
+          { kind: 'diagnostic', id: id('unreadable'), reason: 'unavailable' },
+        ] },
+      },
+    } as unknown as Parameters<typeof buildProcessTree>[0]
+    const tree = buildProcessTree(list, id('root'))
+    expect(tree.map(row => row.id)).toEqual(['root', 'child', 'catalog', 'unreadable'])
+    expect(tree[1]).toMatchObject({ running: true, subagent: true })
+    expect(tree[2]).toMatchObject({ label: 'Catalog child', depth: 1 })
   })
 })
 

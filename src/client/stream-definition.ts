@@ -19,7 +19,7 @@ import type {
   ConversationViewBuilder,
   ConversationViewDefinition,
   ConversationViewNode,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
 /** The event type the patched providers append. */
 export const STREAM_EVENT_TYPE = 'subagent/stream'
@@ -71,7 +71,7 @@ export interface ProcessConsoleViewSnapshot {
   readonly externals: ReadonlyMap<string, ExternalProcess>
 }
 
-declare module '@deepseek-ai/dsh-client-runtime/client' {
+declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationViewSnapshotMap {
     /** External delegations folded from `subagent/stream` events. */
     'process-console': ProcessConsoleViewSnapshot

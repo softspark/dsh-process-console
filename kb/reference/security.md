@@ -2,8 +2,9 @@
 title: "dsh-process-console Security Model"
 category: reference
 service: dsh-process-console
+version: "2.0.0"
 tags: [security, dsh, plugin, client, read-only]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "What the Processes tab can read, what it can never do, and why it adds no new host surface."
 ---

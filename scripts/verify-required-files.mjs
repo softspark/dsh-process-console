@@ -16,6 +16,7 @@ const required = [
   'scripts/audit.mjs', 'scripts/lint.mjs', 'scripts/validate-kb.mjs', 'scripts/validate-license.mjs',
   'scripts/validate-package.mjs', 'scripts/validate-config.mjs',
   'scripts/verify-version-sync.mjs',
+  'scripts/verify-artifacts.mjs',
   '.github/CODEOWNERS', '.github/FUNDING.yml', '.github/dependabot.yml',
   '.github/CONTRIBUTING.md', '.github/PULL_REQUEST_TEMPLATE.md',
   '.github/ISSUE_TEMPLATE/bug_report.md',

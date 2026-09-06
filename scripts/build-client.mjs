@@ -26,8 +26,12 @@ import { rolldown } from 'rolldown'
 import { transform } from 'lightningcss'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-/** Bare specifiers that must be inlined because the loader does not serve them. */
-const BUNDLED_EXTERNALS = []
+/** Reviewed modules served by DSH's loader (ADR-003). */
+const ALLOWED_EXTERNALS = new Set([
+  'react', 'react/jsx-runtime',
+  '@deepseek-ai/dsh-api-session-controller/client',
+  '@deepseek-ai/dsh-client-ui-conversation/client',
+])
 const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'))
 const PACKAGE = manifest.name
 const ENTRY = resolve(root, 'src/client/index.tsx')
@@ -97,13 +101,12 @@ const cssModules = {
 
 const bundle = await rolldown({
   input: ENTRY,
-  // Only what the harness's module table actually provides may stay external.
-  // No published client bundle requires `zod`, so the loader does not serve it
-  // and the Remote descriptor's schemas have to travel inside this artifact —
-  // an external here would be a module-not-found at factory time.
+  // These public constructors are supplied through the DSH loader, never
+  // imported as ordinary browser ESM or copied from a private implementation.
   external: (source) => {
-    if (source.startsWith('.') || source.startsWith('/')) return false
-    return !BUNDLED_EXTERNALS.some((name) => source === name || source.startsWith(`${name}/`))
+    if (source.startsWith('.') || source.startsWith('/') || source.startsWith('\0')) return false
+    if (!ALLOWED_EXTERNALS.has(source)) throw new Error(`Unreviewed browser import: ${source}`)
+    return true
   },
   plugins: [cssModules],
   platform: 'browser',

@@ -13,12 +13,12 @@ import type {
   AssistantBlock,
   AssistantMessageNode,
   ConversationNode,
-  ConversationSnapshot,
   PartialAssistant,
   RunningToolCall,
   ToolCallBlock,
   ToolResultNode,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ProcessConversationSnapshot } from './process-source.ts'
 
 /** What a line is, which decides its gutter label and colour. */
 export type ConsoleLineKind =
@@ -59,7 +59,7 @@ export const LONG_LINE_CHARS = 1200
 export const LONG_LINE_ROWS = 30
 
 /** The snapshot slice the fold reads. */
-export type ConsoleInput = Pick<ConversationSnapshot, 'nodes' | 'partial' | 'runningCalls' | 'pending'>
+export type ConsoleInput = Pick<ProcessConversationSnapshot, 'nodes' | 'partial' | 'runningCalls' | 'pending'>
 
 type Block = { readonly type: string } & Record<string, unknown>
 

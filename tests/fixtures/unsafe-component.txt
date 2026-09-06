@@ -1,0 +1,1 @@
+export const UnsafeComponent = () => <div>{eval(userInput)}</div>

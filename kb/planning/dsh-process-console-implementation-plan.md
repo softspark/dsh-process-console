@@ -2,8 +2,9 @@
 title: "dsh-process-console Implementation Plan"
 category: planning
 service: dsh-process-console
+version: "2.0.0"
 tags: [plan, dsh, plugin, console, subagent, observability]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "Plan, success criteria and pre-mortem for the Processes tab: a live per-process console next to Chat and Trajectory."
 ---

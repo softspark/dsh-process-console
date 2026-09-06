@@ -4,10 +4,21 @@ All notable changes to `@softspark/dsh-process-console` are documented here. The
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-09-06
+
+### Changed
+
+- Require DSH `0.1.2-rc.1`; aggregate Session lifecycle, Conversation targets, Trajectory records, and pending interactions through public services.
+- Include catalog-only children and unreadable catalog entries in the process tree.
+- Enforce 70% statement, branch, function, and line coverage during verification, CI, and publishing.
 
 ### Fixed
 
+- Opt into DSH's native composer-overlay layout so resize handles cannot cover process rows and the console keeps its bounded scroll area.
+
+- Dispose replaced subscriptions and reject stale pagination completion after switching processes.
+- Emit advertised browser declarations, validate all exported artifacts, and remove the unpublished source wildcard export.
+- Version KB metadata and distinguish partial historical registry checks from complete post-release verification.
 - The browser bundle no longer embeds the build machine's absolute repository path in its CSS-module region labels.
 
 ### Added

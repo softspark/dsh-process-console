@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProcessConsoleView.module.css'
@@ -165,13 +165,14 @@ function ProcessTree({ rows, selected, onSelect, t }: TreeProps) {
 }
 
 export function ProcessConsoleView({
-  sessionId, useSession, useSessions, useProcess, select, loadOlder, t,
+  sessionId, useConversation, useSessions, useProcess, select, loadOlder, t,
 }: ProcessConsoleViewProps) {
   const ids = useSessions(state => state.ids)
   const byId = useSessions(state => state.byId)
-  const rootExternals = useSession(state => state.views.get('process-console')?.externals ?? NO_EXTERNALS)
+  const subagentsByParent = useSessions(state => state.subagentsByParent)
+  const rootExternals = useConversation(state => state.views.get('process-console')?.externals ?? NO_EXTERNALS)
   const process = useProcess(state => state)
-  const entries = useMemo(() => buildProcessTree({ ids, byId }, sessionId), [ids, byId, sessionId])
+  const entries = useMemo(() => buildProcessTree({ ids, byId, subagentsByParent }, sessionId), [ids, byId, subagentsByParent, sessionId])
 
   const [filter, setFilter] = useState('')
   const [follow, setFollow] = useState(true)
@@ -261,7 +262,7 @@ export function ProcessConsoleView({
       : (current.running ? t('tree.running') : t('tree.idle'))
 
   return (
-    <div className={css.root}>
+    <div className={css.root} data-conversation-composer-overlay="">
       <ProcessTree rows={rows} selected={selectedId} onSelect={onSelectRow} t={t} />
       <section className={css.pane} aria-label={current?.label ?? String(selectedId)}>
         <div className={css.toolbar}>

@@ -2,8 +2,9 @@
 title: "Install dsh-process-console"
 category: howto
 service: dsh-process-console
+version: "2.0.0"
 tags: [setup, install, dsh, profile, bundle]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "Install the bundle into a DSH profile and confirm the Processes tab appears."
 ---
@@ -14,7 +15,7 @@ description: "Install the bundle into a DSH profile and confirm the Processes ta
 
 - Node.js 22.19.0 or newer.
 - `pnpm` for the DSH profile plugin manager.
-- DeepSeek Harness `0.1.1-rc.2`.
+- DeepSeek Harness `0.1.2-rc.1`.
 
 No harness modification is required. The plugin works on the published harness.
 

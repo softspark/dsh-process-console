@@ -2,6 +2,7 @@
 title: "Upstream proposal: a per-child stream for out-of-process subagents"
 category: reference
 service: dsh-process-console
+version: "2.0.0"
 tags: [upstream, deepseek-harness, proposal, subagent, discussion]
 last_updated: "2026-09-06"
 created: "2026-09-06"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ConversationMatch, ConversationNodeContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConversationMatch, ConversationNodeContext } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   ProcessConsoleViewBuilder, readStreamData, streamNodeDefinition,
   type ExternalProcess, type ProcessConsoleViewNode,
@@ -9,6 +9,8 @@ function event(seq: number, time: number, data: unknown, type = 'subagent/stream
   return { type, seq, time, data } as unknown as ConversationMatch['event']
 }
 
+function match(seq: number, time: number, data: unknown, role: 'start'): Extract<ConversationMatch, { role: 'start' }>
+function match(seq: number, time: number, data: unknown, role?: 'update'): ConversationMatch
 function match(seq: number, time: number, data: unknown, role: 'start' | 'update' = 'update'): ConversationMatch {
   return { event: event(seq, time, data), view: undefined, role, location: { kind: 'unresolved' } } as unknown as ConversationMatch
 }

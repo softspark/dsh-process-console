@@ -11,11 +11,13 @@ The tab sits next to Chat and Trajectory. It lists every process of the current 
 
 Works on the **published harness**. No patch, no fork, no modified checkout. This is an independently maintained SoftSpark community integration. It is unofficial and is not affiliated with or endorsed by DeepSeek.
 
-## What's New in v1.0.0
+## What's New in v2.0.0
 
-- Processes tab with a process tree and a live per-process console, paired tool requests and responses with elapsed time.
-- External delegations (Claude Code, ACP agents) as nested rows with their own console when the harness records `subagent/stream` events.
-- The harness-side change shipped as a reviewed patch set in `patches/dsh-0.1.1-rc.2/`, pending upstream.
+- DSH `0.1.2-rc.1` support through its Session Controller, Conversation, Trajectory, and pending-interaction services.
+- Catalog-only children in the process tree and protection against stale pagination after switching processes.
+- Enforced 70% coverage and complete browser TypeScript declarations.
+
+Version 2 requires DSH `0.1.2-rc.1`. Keep plugin `1.0.0` when using DSH `0.1.1-rc.2`.
 
 Full history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -40,7 +42,7 @@ Chat shows the conversation. Trajectory shows one session's ledger. Neither answ
 ## Requirements
 
 - Node.js 22.19.0 or newer
-- DeepSeek Harness `0.1.1-rc.2`
+- DeepSeek Harness `0.1.2-rc.1`
 - `pnpm` for the profile plugin manager
 
 ## Install

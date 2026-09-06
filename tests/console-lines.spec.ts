@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConversationNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   contentText, foldConsole, isLong, LONG_LINE_ROWS, prettyArguments, safeJson, type ConsoleInput,
 } from '../src/client/console-lines.ts'
@@ -59,7 +59,7 @@ describe('foldConsole', () => {
     ]
     const lines = foldConsole(input({
       nodes,
-      runningCalls: [{ callId: 'r1', name: 'fs_search', argsRaw: '{"q":"*"}', turn: 2, step: 1, time: 8000, callView: null, subCalls: [] }],
+      runningCalls: [{ callId: 'r1', name: 'fs_search', argsRaw: '{"q":"*"}', turn: 2, step: 1, time: 8000, subCalls: [] }],
       partial: { turn: 2, step: 1, blocks: [{ kind: 'text', text: 'Searching' }] },
       pending: [{ kind: 'approval', approvalId: 'ap1' } as unknown as ConsoleInput['pending'][number]],
     }))

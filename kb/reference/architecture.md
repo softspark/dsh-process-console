@@ -2,8 +2,9 @@
 title: "dsh-process-console Architecture"
 category: reference
 service: dsh-process-console
+version: "2.0.0"
 tags: [architecture, dsh, plugin, cordis, client, slot, subagent]
-last_updated: "2026-09-05"
+last_updated: "2026-09-06"
 created: "2026-09-05"
 description: "The slot the tab registers into, the data path from session windows to console lines, and why the package is standalone."
 ---
@@ -39,24 +40,27 @@ The `inject` waits on the slot's declaration and re-registers after a redeclarat
 ## Data path
 
 ```text
-SessionListState.byId ──buildProcessTree──▶ tree rows (root + parentId closure)
+SessionListState.byId + subagentsByParent ──buildProcessTree──▶ tree rows
                                                       │ select(id)
-ctx.sessions.binding(id).session ──ProcessSource──▶ ConversationSnapshot ──foldConsole──▶ ConsoleLine[]
+Session lifecycle + Conversation + Trajectory + pending interactions
+    └── ProcessSource ──▶ ProcessConversationSnapshot ──foldConsole──▶ ConsoleLine[]
 ```
 
-- **Tree.** The host lists subagent sessions with `parentId` set to the delegating session. The tree is the depth-first closure of that relation from the current session. Pure function, tested in isolation.
-- **Source.** One `ProcessSource` per conversation, created in the inject factory and kept in a map so the selected child survives a tab switch. It subscribes to exactly one session face at a time and republishes `{ selected, status, conversation }`. It sits in the inject `hooks` compartment; the renderer binds it to the `useProcess` hook.
-- **Opening a child window.** `binding()` resolves a face without staging it, and the public `SessionFace` does not declare `open()`. The concrete `Session` does. `ensureOpen` checks for the method at runtime and reports `unavailable` when it is missing, so a harness that removes it produces a visible state instead of a silent blank.
+- **Tree.** Combine globally listed `parentId` relationships with `subagentsByParent` catalogs. Include catalog-only and diagnostic children, preserving order while guarding duplicates and cycles. Presets come from `projectionValues.agentPreset`.
+- **Source.** One `ProcessSource` per conversation combines the selected lifecycle, Conversation snapshot, Trajectory target, and pending interaction. Replacing selection disposes previous subscriptions and owned child streams. A generation counter prevents old pagination completions from affecting a later selection. The renderer binds it to `useProcess`.
+- **Opening a child window.** Ordinary bindings use the concrete Session opener when available. A catalog-only child uses the independent public journal reader described in [ADR-003](../decisions/adr-003-public-child-journal.md). The address comes from its actual parent catalog, the gateway authorizes every read, and global Chat selection stays unchanged.
 - **Fold.** `foldConsole` flattens `nodes`, `runningCalls`, `partial` and `pending` into lines with a stable key per event or call id. Tool requests and responses share the call id, which is how the view pairs them and computes elapsed time.
-- **External delegations.** `streamNodeDefinition` (a `ConversationNodeDefinition`) matches `subagent/stream` events by child id, and `ProcessConsoleViewBuilder` publishes them under the `process-console` view target as `ReadonlyMap<childId, ExternalProcess>`. The tab reads the root's map through `useSession` and the selected child's through the process source, places each child under the session whose log holds it (`withExternals`), and folds the selected child's steps with `foldExternal`. Selecting a delegation is local view state; the session source is not re-targeted. The events themselves come from the harness-side change in [the subagent/stream reference](subagent-stream.md).
+- **External delegations.** `streamNodeDefinition` (a `ConversationNodeDefinition`) matches `subagent/stream` events by child id, and `ProcessConsoleViewBuilder` publishes them under the `process-console` view target as `ReadonlyMap<childId, ExternalProcess>`. The tab reads the root's map through `useConversation` and the selected child's through the process source, places each child under the session whose log holds it (`withExternals`), and folds the selected child's steps with `foldExternal`. Selecting a delegation is local view state; the session source is not re-targeted. The events themselves come from the harness-side change in [the subagent/stream reference](subagent-stream.md).
 
 ## Rendering
+
+The root declares `data-conversation-composer-overlay`, the same layout contract as native Trajectory. The shell then constrains the view height and hides its width handles, keeping process rows clickable and the console scroll independent of the composer.
 
 Pure presentation over the four props shares. View state is local: filter, follow, raw toggles, per-line expansion. The scroller reserves the floating composer's live height through `--dsh-composer-height`, the same variable Trajectory reads.
 
 ## Standalone by construction
 
-Peer dependencies are exact published harness packages. The browser bundle externalizes only `react`; every harness import is type-only and erased at build. Nothing resolves through a checkout of the monorepo.
+Peer dependencies are exact published harness packages. The browser bundle uses React and the two reviewed public client constructor entries in ADR-003. Every other harness import is type-only; the build rejects other bare imports. Nothing resolves through a checkout of the monorepo.
 
 ## Related
 

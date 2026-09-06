@@ -11,6 +11,6 @@
     "module": "NodeNext",
     "moduleResolution": "nodenext"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/client/**"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": []
 }

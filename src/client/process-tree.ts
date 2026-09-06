@@ -8,7 +8,8 @@
  * @module @softspark/dsh-process-console/client/process-tree
  */
 
-import type { SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ExternalProcess } from './stream-definition.ts'
 
 /** A row for an out-of-process delegation folded from the parent's log. */
@@ -73,7 +74,7 @@ export interface ProcessEntry {
 }
 
 /** The slice of the session list the tree reads. */
-export type ProcessTreeInput = Pick<SessionListState, 'ids' | 'byId'>
+export type ProcessTreeInput = Pick<SessionListState, 'ids' | 'byId'> & Partial<Pick<SessionListState, 'subagentsByParent'>>
 
 /**
  * Build the depth-first process tree rooted at `rootId`.
@@ -95,6 +96,21 @@ export function buildProcessTree(list: ProcessTreeInput, rootId: SessionId): Pro
     if (siblings === undefined) childrenOf.set(parent, [id])
     else siblings.push(id)
   }
+  // DSH 0.1.2 keeps catalog-only children outside the global list. Include
+  // diagnostics too, so an unreadable child remains selectable and explicit.
+  const catalogRows = new Map<SessionId, { label: string; running: boolean }>()
+  for (const [parent, catalog] of Object.entries(list.subagentsByParent ?? {})) {
+    const parentId = parent as SessionId
+    const children = childrenOf.get(parentId) ?? []
+    for (const entry of catalog.entries) {
+      if (!children.includes(entry.id)) children.push(entry.id)
+      catalogRows.set(entry.id, {
+        label: entry.kind === 'child' ? entry.label ?? String(entry.id) : String(entry.id),
+        running: entry.kind === 'child' && entry.activity === 'running',
+      })
+    }
+    childrenOf.set(parentId, children)
+  }
 
   const out: ProcessEntry[] = []
   const seen = new Set<SessionId>()
@@ -102,14 +118,16 @@ export function buildProcessTree(list: ProcessTreeInput, rootId: SessionId): Pro
     if (seen.has(id)) return
     seen.add(id)
     const summary = list.byId[id]
+    const catalog = catalogRows.get(id)
+    const preset = (summary?.projectionValues as Readonly<Record<string, unknown>> | undefined)?.agentPreset
     out.push({
       id,
       parentId,
       depth,
-      label: summary?.displayTitle ?? String(id),
-      running: summary?.running ?? false,
-      agentPreset: summary?.agentPreset,
-      subagent: summary?.origin === 'subagent',
+      label: summary?.displayTitle ?? catalog?.label ?? String(id),
+      running: catalog?.running ?? summary?.running ?? false,
+      agentPreset: typeof preset === 'string' ? preset : undefined,
+      subagent: summary?.origin === 'subagent' || catalog !== undefined,
     })
     for (const child of childrenOf.get(id) ?? []) visit(child, id, depth + 1)
   }

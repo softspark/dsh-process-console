@@ -2,6 +2,7 @@
 title: "ADR-002: Delegations stream through an ignorable log-only event in the harness"
 category: decisions
 service: dsh-process-console
+version: "2.0.0"
 tags: [adr, dsh, subagent, claude-code, acp, session-log, patch]
 last_updated: "2026-09-06"
 created: "2026-09-06"

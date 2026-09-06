@@ -2,6 +2,7 @@
 title: "ADR-001: A standalone browser-only bundle over the public object layer"
 category: decisions
 service: dsh-process-console
+version: "2.0.0"
 tags: [adr, dsh, plugin, slot, client, architecture]
 last_updated: "2026-09-06"
 created: "2026-09-06"
