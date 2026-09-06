@@ -55,7 +55,16 @@ The tarball built from the original repository (SHA-1 `20832a8f3c59fcd0f3e169d4f
 - Cancelling an active `sleep 60` call produced `AbortError/ABORTED`, removed the running row, and restored the composer. After a clean DSH restart, the native subagent task completed successfully.
 - Page and console error capture remained empty. The console uses the native composer-overlay layout contract so the shell's resize handles do not cover its rows.
 
-This is candidate evidence. Registry signatures, provenance, and the exact published artifact must still be checked after publication; these checks are not inferred from the candidate.
+## Version 2.0.0 published artifact (2026-09-06)
+
+- Signed tag `v2.0.0` targets `225f11ddca0fb3d5d313313cac2934e5ab1c9038`. The existing SSH signing key verified successfully without changing global Git configuration.
+- [Release-head CI](https://github.com/softspark/dsh-process-console/actions/runs/34055691711) and [publication](https://github.com/softspark/dsh-process-console/actions/runs/34055829862) completed successfully.
+- npm reports version `2.0.0`, SHA-1 `312993a7f14a707cbbcf56e0b306f195302cdd19`, and SLSA v1 provenance. `npm audit signatures` against a clean registry installation verified the package's signature and attestation.
+- All 31 published files were compared with the original repository build, including LICENSE, NOTICE, and every export target. Only CSS-map property ordering differed in `lib/client.js`; the map values and all other content matched.
+- Both UI plugins were installed by exact npm version into the disposable DSH profile and the app restarted. The running console client matched the registry installation byte for byte.
+- On the exact published console, an actual child row opened its own read CALL/RESULT and `UI_NATIVE_CHILD_20260906` answer through a WebSocket journal request carrying the durable parent/child address. The parent header and URL stayed unchanged. Returning to main removed the child transcript without errors.
+- The combined registry smoke also confirmed file-preview's open/close/reopen and native ZIP fallback: the original opener returned HTTP 200 with `ok: true` and `opened: true`, with no preview dialog for the ZIP.
+- Browser page/console error capture was empty. The disposable DSH process was stopped after verification.
 
 ## Rollback
 
