@@ -42,7 +42,7 @@ Provenance and signatures pass, the tab appears from the registry artefact alone
 
 ## Last verified release
 
-Not yet run: no version has been published.
+Version `1.0.0` passed this procedure on 2026-09-06. The registry artefact carries a SLSA v1 provenance attestation, `npm audit signatures` reports one verified attestation, `dsh plugin --profile web add @softspark/dsh-process-console@1.0.0 --save-exact` into a disposable `DSH_HOME` composed the single `ui-process-console` row naming the package root, and the profile manifest recorded the exact version. Steps 4 to 6 (a live session and a delegation) were not run against the registry artefact on the release host, which has no model credentials; the same source at commit `135e0ca` passed both live checks in the dsh-drydock workbench on 2026-09-05, including a nested Claude Code delegation row with its own console.
 
 ## Rollback
 
