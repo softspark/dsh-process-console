@@ -69,9 +69,13 @@ Where the packages live in the drydock image:
 | `dsh-session`, `dsh-subagent` | `/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<package>` (the global CLI install; root-owned) |
 | `dsh-subagent-claude-code`, `dsh-subagent-acp` | `$DSH_STAGE/profiles/web/node_modules/@deepseek-ai/<package>` (the staged profile) |
 
-Until the change is upstream, a Dockerfile step after the global install and after the profile staging must apply the four `lib.patch` files; a rebuild without that step returns to the stock behaviour and the Processes tab silently loses the delegation rows. The live container applied on 2026-09-05 keeps the stock files next to each patched `lib` as `lib.orig-stream` for rollback.
+dsh-drydock `1.27.0` applies the set: the core packages at image build, the providers at build and again on every boot (`docker/apply-harness-patches.sh`, keyed by `DSH_VERSION`, refusing a package at another version). Its [ADR-006](https://github.com/softspark/dsh-drydock/blob/main/kb/decisions/adr-006-harness-stream-patches.md) records the decision.
 
-`source.patch` also carries the checkout's pending `inheritSessionPermissions` change to `dsh-subagent-claude-code`, which predates this work and belongs to the same upstream conversation.
+## Upstream status
+
+`deepseek-ai/deepseek-harness` does not accept external pull requests at this stage and has issues disabled (its `CONTRIBUTING.md` points at GitHub Discussions). The change is offered as a design proposal in an upstream Discussion, drafted in [upstream-proposal.md](upstream-proposal.md); until a pinned release carries an equivalent, a harness pin bump means regenerating the `lib.patch` files from `source.patch` on the new tag.
+
+`source.patch` also carries the checkout's pending `inheritSessionPermissions` change to `dsh-subagent-claude-code`, which predates this work and is needed for the patched `index.ts` to compile.
 
 ## Tests
 

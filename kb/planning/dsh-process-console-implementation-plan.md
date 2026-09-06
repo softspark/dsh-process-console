@@ -74,9 +74,11 @@ responses), text, reasoning and final result.
 
 Open items:
 
-- Upstream pull request for the four harness changes. Until it lands, the patch
-  set in `patches/dsh-0.1.1-rc.2/` must be re-applied after every drydock image
-  rebuild.
+- Upstream adoption. The harness accepts neither external pull requests nor
+  issues yet, so the change is proposed in a GitHub Discussion
+  (`kb/reference/upstream-proposal.md`) with `source.patch` linked.
+  dsh-drydock `1.27.0` applies the set at image build and re-checks the
+  providers on every boot; a harness pin bump regenerates the set.
 - A per-process "Open in Chat" action using `ctx.sessions.openSubagent` for
   session-backed children.
 
