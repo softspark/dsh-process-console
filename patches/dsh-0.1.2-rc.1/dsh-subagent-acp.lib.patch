@@ -1,0 +1,194 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,12 +1,12 @@
+ import { accessSync, constants, statSync } from "node:fs";
+ import { isAbsolute, resolve } from "node:path";
+ import z from "@deepseek-ai/schemastery";
++import { AssistantOutputFold, coalesceSubagentStream, createSubagentStreamSink, settleRunResult, subprocessRunHandle } from "@deepseek-ai/dsh-subagent";
+ import { MAX_TIMER_DELAY_MS } from "@deepseek-ai/dsh-timeout";
+ import { randomUUID } from "node:crypto";
+ import { Readable, Writable } from "node:stream";
+ import { PROTOCOL_VERSION, client, methods, ndJsonStream } from "@agentclientprotocol/sdk";
+ import { brandString } from "@deepseek-ai/dsh-brand";
+-import { AssistantOutputFold, settleRunResult, subprocessRunHandle } from "@deepseek-ai/dsh-subagent";
+ //#region lib/types/run.js
+ /**
+ * Fresh-process ACP subagent client. Drives one child session and owns cancellation and
+@@ -14,6 +14,109 @@
+ *
+ * @module @deepseek-ai/dsh-subagent-acp/run
+ */
++function asAcpRecord(value) {
++	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
++}
++function acpJson(value) {
++	if (value === void 0) return "";
++	if (typeof value === "string") return value;
++	try {
++		return JSON.stringify(value, null, 2) ?? "";
++	} catch {
++		return String(value);
++	}
++}
++/** Flatten ACP tool-call content (content blocks, diffs, terminal refs) to text. */
++function acpToolContentText(content) {
++	if (!Array.isArray(content)) return "";
++	const parts = [];
++	for (const candidate of content) {
++		const entry = asAcpRecord(candidate);
++		if (entry === void 0) continue;
++		switch (entry["type"]) {
++			case "content": {
++				const block = asAcpRecord(entry["content"]);
++				if (block?.["type"] === "text" && typeof block["text"] === "string") parts.push(block["text"]);
++				break;
++			}
++			case "diff": {
++				const path = typeof entry["path"] === "string" ? entry["path"] : "";
++				const oldText = typeof entry["oldText"] === "string" ? entry["oldText"] : "";
++				const newText = typeof entry["newText"] === "string" ? entry["newText"] : "";
++				parts.push(`--- ${path}\n${oldText}\n+++ ${path}\n${newText}`);
++				break;
++			}
++			case "terminal":
++				parts.push(`[terminal ${typeof entry["terminalId"] === "string" ? entry["terminalId"] : ""}]`);
++				break;
++			default: break;
++		}
++	}
++	return parts.join("\n");
++}
++/**
++* Translate one ACP session update into a provider-neutral child step.
++*
++* Message and thought chunks become text fragments (the driver merges runs of
++* them); a tool call becomes a `tool-call`; an update that settles a call
++* becomes a `tool-result`; a plan becomes one `plan` step. Mode, command,
++* config and usage updates yield nothing.
++* @param update - one `session/update` payload.
++* @returns the step, or `undefined` when the update carries nothing to show.
++*/
++function mapAcpUpdate(update) {
++	const raw = update;
++	switch (raw["sessionUpdate"]) {
++		case "agent_message_chunk": return {
++			kind: "assistant",
++			text: acpContentText(raw["content"])
++		};
++		case "agent_thought_chunk": return {
++			kind: "thought",
++			text: acpContentText(raw["content"])
++		};
++		case "user_message_chunk": return {
++			kind: "other",
++			text: acpContentText(raw["content"])
++		};
++		case "tool_call": {
++			const status = typeof raw["status"] === "string" ? raw["status"] : "pending";
++			return {
++				kind: "tool-call",
++				name: typeof raw["title"] === "string" ? raw["title"] : "tool",
++				callId: String(raw["toolCallId"] ?? ""),
++				text: acpJson(raw["rawInput"]),
++				meta: {
++					status,
++					toolKind: typeof raw["kind"] === "string" ? raw["kind"] : null
++				}
++			};
++		}
++		case "tool_call_update": {
++			const status = typeof raw["status"] === "string" ? raw["status"] : void 0;
++			const contentText = acpToolContentText(raw["content"]);
++			const text = contentText !== "" ? contentText : acpJson(raw["rawOutput"]);
++			if (status !== "completed" && status !== "failed" && text === "") return void 0;
++			return {
++				kind: "tool-result",
++				callId: String(raw["toolCallId"] ?? ""),
++				text,
++				isError: status === "failed",
++				...typeof raw["title"] === "string" ? { name: raw["title"] } : {},
++				meta: { status: status ?? null }
++			};
++		}
++		case "plan":
++		case "plan_update": return {
++			kind: "plan",
++			text: (Array.isArray(raw["entries"]) ? raw["entries"] : []).map((candidate) => {
++				const entry = asAcpRecord(candidate);
++				return `- [${String(entry?.["status"] ?? "")}] ${String(entry?.["content"] ?? "")}`;
++			}).join("\n")
++		};
++		default: return;
++	}
++}
+ /** EOF grace for child flush and nested-process teardown; wider than the signal grace below. */
+ const DEFAULT_DISPOSE_EOF_GRACE_MS = 6e3;
+ /** Default POSIX grace between SIGTERM and SIGKILL on dispose (the `disposeGraceMs` config). */
+@@ -206,6 +309,9 @@
+ async function startAcpRun(request, spec) {
+ 	if (request.signal.aborted) throw new Error("subagent request was aborted before the ACP child started");
+ 	const id = brandString(randomUUID());
++	const stream = coalesceSubagentStream((item) => {
++		spec.onStream?.(item, id);
++	});
+ 	let child;
+ 	try {
+ 		child = spec.spawn({
+@@ -269,6 +375,10 @@
+ 	const agent = client({ name: "deepseek-harness-subagent-acp" }).onNotification(methods.client.session.update, ({ params }) => {
+ 		const update = params.update;
+ 		if (update.sessionUpdate === "agent_message_chunk") fold.pushText(acpContentText(update.content));
++		if (spec.onStream !== void 0) {
++			const item = mapAcpUpdate(update);
++			if (item !== void 0) stream.push(item);
++		}
+ 		return Promise.resolve();
+ 	}).onRequest(methods.client.session.requestPermission, ({ params }) => {
+ 		if (spec.permission === "allow") {
+@@ -375,6 +485,7 @@
+ 					})]);
+ 					const stopReason = acpStopReason(promptResult.stopReason);
+ 					diagnostic = terminalFailure(promptResult.stopReason, latestPermission);
++					stream.flush();
+ 					return {
+ 						output: collectOutput(),
+ 						...diagnostic === void 0 ? {} : { diagnostic },
+@@ -395,7 +506,10 @@
+ 					throw error;
+ 				}
+ 			},
+-			collectOutput,
++			collectOutput: () => {
++				stream.flush();
++				return collectOutput();
++			},
+ 			collectDiagnostic: () => diagnostic,
+ 			cancelled: () => flags.cancelled,
+ 			onError: spec.onError,
+@@ -519,7 +633,7 @@
+ 			this.ctx.logger.warn(`subagent-acp "${this.name}": child start failed: %o`, error);
+ 			throw failure;
+ 		}
+-		return startAcpRun(request, {
++		const spec = {
+ 			command: this.config.command,
+ 			args: this.config.args,
+ 			cwd,
+@@ -530,8 +644,16 @@
+ 			spawn: (spec) => this.ctx.subprocess.spawn(spec),
+ 			onError: (error, stopReason) => {
+ 				this.ctx.logger.warn(`subagent-acp "${this.name}": child run failed (${stopReason}): ${error.message}`);
++			},
++			onStream: (item, childId) => {
++				sink ??= createSubagentStreamSink(request.parent.session, childId, this.name, (error) => {
++					this.ctx.logger.warn(`subagent-acp "${this.name}": child stream not recorded: ${error.message}`);
++				});
++				sink(item);
+ 			}
+-		});
++		};
++		let sink;
++		return startAcpRun(request, spec);
+ 	}
+ };
+ function apply(ctx, config) {

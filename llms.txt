@@ -15,7 +15,7 @@
 - kb/reference/upstream-proposal.md: the text proposed to the harness maintainers.
 - kb/decisions/: architecture decision records.
 - kb/procedures/: pre-commit, release, and post-release SOPs.
-- patches/dsh-0.1.1-rc.2/: source patch and per-package lib patches for the harness change.
+- patches/dsh-<version>/: source patch and per-package lib patches for the harness change, one set per harness version (0.1.2-rc.1 current, 0.1.1-rc.2 kept for plugin 1.0.0).
 
 ## Hard constraints
 

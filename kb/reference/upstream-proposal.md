@@ -30,7 +30,7 @@ delegation. No UI can show what the child did, which tools it ran, what it
 read, or where a slow delegation is spending its time. The subagent README
 already names this: "ACP children remain one-shot and are not trace-enumerable".
 
-**Proposal.** Four small changes on `0.1.1-rc.2`, kept in the shape the
+**Proposal.** Four small changes, ported across `0.1.1-rc.2` and `0.1.2-rc.1`, kept in the shape the
 codebase already uses for log-only records:
 
 1. `dsh-session`: `Session.append(type, data, { ignorable: true })` for
@@ -71,12 +71,13 @@ frames and the client runtime. Reusing `tool/code-dispatch` is semantically a
 sub-dispatch of the parent's own call and cannot carry the child's assistant
 text. A side channel outside the log has no durability or replay.
 
-**Reference implementation.** Source patch against `dsh-v0.1.1-rc.2`, applies
+**Reference implementation.** Source patch against `dsh-v0.1.2-rc.1`, applies
 cleanly, with tests for the sink, the coalescer, both mappers (the ACP one
 against the repository's mock ACP server) and the `ignorable` option:
-<https://github.com/softspark/dsh-process-console/tree/main/patches/dsh-0.1.1-rc.2>.
-Not run against the repository's full per-file coverage and doc-sync gates, so
-it is offered as a design reference rather than a drop-in.
+<https://github.com/softspark/dsh-process-console/tree/main/patches/dsh-0.1.2-rc.1>.
+The four packages' own suites pass with it applied (723 tests). It has not been
+run against the repository's full per-file coverage and doc-sync gates, so it is
+offered as a design reference rather than a drop-in.
 
 Happy to adjust the vocabulary or the placement if the team prefers a
 different shape; the two facts I would argue for are the producer-side

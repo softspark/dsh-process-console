@@ -4,6 +4,12 @@ All notable changes to `@softspark/dsh-process-console` are documented here. The
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `patches/dsh-0.1.2-rc.1/`: the `subagent/stream` change ported to the harness version version 2 targets. Upstream `0.1.2-rc.1` carries no equivalent, so delegation rows still need it. The port adjusts four mechanical drifts (`JsonValue` moved to `dsh-util-values`, `brandString<SessionId>` minting, the ACP driver's `settleRunResult` settlement, and `Session.snapshotEvents()`), and drops an unrelated `inheritSessionPermissions` change the previous set carried by accident. The four packages' own suites pass with it applied.
+
 ## [2.0.0] - 2026-09-06
 
 ### Changed

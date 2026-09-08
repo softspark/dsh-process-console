@@ -1,0 +1,26 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1401,11 +1401,14 @@
+ 	*   rejects before the log changes.
+ 	*/
+ 	append(type, data, ...opts) {
+-		const surfaceOpts = opts[0];
++		const options = opts[0];
++		const surfaceOpts = options;
+ 		const surfaceMetadata = {
+ 			...surfaceOpts?.sourceEventSeqs === void 0 ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
+ 			...surfaceOpts?.surfaceOp === void 0 ? {} : { surfaceOp: surfaceOpts.surfaceOp }
+ 		};
++		const ignorable = options?.ignorable === true;
++		if (ignorable && surfaceOpts?.surfaceOp !== void 0) throw new Error(`session event "${type}" cannot be both a surface event and ignorable`);
+ 		const dataSnapshot = snapshotJsonValue(data);
+ 		if (dataSnapshot === void 0) throw new Error(`session event "${type}" carries non-JSON-serializable data`);
+ 		assertSupportedRequestHeader(type, dataSnapshot, `session event "${type}"`);
+@@ -1418,6 +1421,7 @@
+ 			seq: SessionSeq(this.log.length),
+ 			time: Date.now(),
+ 			data: dataSnapshot,
++			...ignorable ? { ignorable: true } : {},
+ 			...surfaceMetadataSnapshot
+ 		});
+ 		this.surfaceManager.validateNext(event);
