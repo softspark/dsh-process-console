@@ -3,7 +3,6 @@
 > A **Processes** tab for the DeepSeek Harness web UI: every agent and subagent of a conversation as a live console, with the exact request and response of each step.
 
 [![npm](https://img.shields.io/npm/v/@softspark/dsh-process-console.svg)](https://www.npmjs.com/package/@softspark/dsh-process-console)
-[![CI](https://github.com/softspark/dsh-process-console/actions/workflows/ci.yml/badge.svg)](https://github.com/softspark/dsh-process-console/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![DSH community plugin](https://img.shields.io/badge/DSH-community%20plugin-4b8bbe.svg)](https://github.com/topics/dsh-plugin)
 

@@ -3,8 +3,8 @@
 ## Workflow
 
 1. Branch from `main`: `feat/<topic>`, `fix/<topic>`, or `docs/<topic>`.
-2. Run `pnpm run verify` before every commit. It is the gate; CI runs the same thing.
-3. Open a pull request. CI must be green on Linux, macOS and Windows.
+2. Run `pnpm run verify` before every commit. It is the gate. There is no CI on pushes or pull requests; the maintainer's release script runs the full gate again, on macOS and in a Linux container, before any tag.
+3. Open a pull request with the `pnpm run verify` result in the description.
 
 ## Commits
 

@@ -4,49 +4,42 @@ on:
   push:
     tags: ['v*']
 
+# Publish only. Every gate ran locally in scripts/release.sh before this tag
+# existed; nothing here re-runs them. See kb/procedures/sop-release.md.
+
 permissions:
   contents: read
 
 jobs:
   publish:
-    name: Verify and publish to npm
+    name: Publish to npm
     runs-on: ubuntu-latest
     environment: npm
     permissions:
       contents: write
       id-token: write
-      security-events: write
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.19.0'
           cache: pnpm
           registry-url: https://registry.npmjs.org
           scope: '@softspark'
+      - name: Tag matches package.json and CHANGELOG
+        run: node scripts/verify-version-sync.mjs --tag "${GITHUB_REF_NAME}"
+      # lib/ is gitignored: the published artefact is built here from the
+      # locked graph. `build` ends by checking every export target exists.
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm run verify
-      - run: node scripts/verify-version-sync.mjs --tag "${GITHUB_REF_NAME}"
-      - run: pnpm run audit
-      - run: pnpm run audit:dependencies
-      - run: pnpm run audit:signatures
-      - name: Generate SARIF
-        run: node scripts/audit.mjs --sarif > audit.sarif
-      - uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: audit.sarif
       - run: pnpm run build
-      - run: npm pack --dry-run --ignore-scripts
       - name: Publish public package with provenance
         run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true

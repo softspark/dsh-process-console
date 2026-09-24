@@ -4,7 +4,7 @@ category: procedures
 service: dsh-process-console
 version: "2.0.0"
 tags: [sop, pre-commit, quality-gate, tests]
-last_updated: "2026-09-06"
+last_updated: "2026-09-24"
 created: "2026-09-05"
 description: "The blocking local gate before every commit."
 ---
@@ -13,7 +13,7 @@ description: "The blocking local gate before every commit."
 
 ## Purpose
 
-Catch locally what CI would catch remotely, before the commit exists.
+Catch problems before the commit exists. No CI runs on pushes or pull requests; the only other place this gate runs is `npm run release`, where a failure blocks the tag.
 
 ## Procedure
 

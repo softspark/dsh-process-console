@@ -24,4 +24,4 @@ In scope: the browser bundle, the build that produces it, and the patch set unde
 - No install-time lifecycle scripts; `ignore-scripts` is set for both consumers and this repository.
 - Exact harness peer versions.
 - The browser build permits React and the two public client constructor modules documented in ADR-003; other harness imports are type-only. Child journal addresses come from actual catalogs and are authorized by the existing gateway.
-- CI runs the source audit, the permission audit and the dependency audit on every push.
+- The release script runs the source audit, the permission audit, the dependency audit and signature verification before every tag; GitHub Actions only publishes the tag, with npm provenance.
